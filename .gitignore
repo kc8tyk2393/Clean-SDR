@@ -1,0 +1,9 @@
+/build
+/out
+/CMakeUserPresets.json
+.vs
+.idea
+cmake-build-*
+*.user
+*.autosave
+aqtinstall.log
