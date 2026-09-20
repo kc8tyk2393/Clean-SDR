@@ -228,6 +228,28 @@ inline Band bandForFrequency(qint64 hz)
     return Band::GEN;
 }
 
+inline qint64 snapTune(qint64 hz, qint64 step, int direction)
+{
+    if (step < 1)
+        step = 1;
+    const qint64 rem = ((hz % step) + step) % step;
+    qint64 next = hz;
+    if (direction > 0)
+        next = (rem == 0) ? hz + step : hz + (step - rem);
+    else if (direction < 0)
+        next = (rem == 0) ? hz - step : hz - rem;
+    return std::clamp(next, 100000LL, 61000000LL);
+}
+
+inline qint64 snapNearest(qint64 hz, qint64 step)
+{
+    if (step < 1)
+        step = 1;
+    const qint64 down = (hz / step) * step;
+    const qint64 up = down + step;
+    return std::clamp((hz - down < up - hz) ? down : up, 100000LL, 61000000LL);
+}
+
 inline quint32 alexFilterWord(qint64 rxHz, qint64 txHz, bool transmitting, bool pureSignal)
 {
     quint32 filters = transmitting ? 0x08000000u : 0;

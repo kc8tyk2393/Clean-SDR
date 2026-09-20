@@ -57,4 +57,6 @@ Use the **MW0LGE Thetis** ANAN build as the reference for gateware/firmware beha
 - RX2, diversity, multi-RX, DUP
 - Meters: S, PWR, SWR, ALC, MIC, ADC overload, supply
 
-DSP here is a Qt6 native chain modelled on WDSP (NR0V). It is not a drop-in binary of Thetis/WDSP; the control surface and Protocol 2 mapping are what you use on the air with a Brick2.
+DSP here uses **WDSP 2.10** (Warren Pratt, NR0V / TAPR OpenHPSDR-wdsp). FFTW 3 is required at runtime (`libfftw3-3.dll` is copied next to the exe).
+
+Use the **MW0LGE Thetis** ANAN build as the reference for gateware/firmware behaviour. Do not mix Hermes-Lite Protocol 1 stacks with this radio.

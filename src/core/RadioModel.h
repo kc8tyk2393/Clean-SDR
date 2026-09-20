@@ -196,7 +196,7 @@ public:
     bool paEnable = true;
     int sampleRate = 192000;
     int rxCount = 1;
-    int tuneStepHz = 100;
+    int tuneStepHz = 1000;
     int txAnt = 0;
     int rxAnt = 0;
     qint64 xit = 0;
@@ -217,6 +217,8 @@ public:
     void syncTxFromRx();
     void syncRxFromTx();
     void setBand(Band band);
+    void setFrequency(qint64 hz, bool vfoB = false, bool snapToStep = false);
+    void tuneBy(int direction, qint64 stepHz = 0, bool vfoB = false);
     void loadSettings();
     void saveSettings() const;
 

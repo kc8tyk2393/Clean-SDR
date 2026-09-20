@@ -64,7 +64,7 @@ void RadioModel::applyFilterPreset(FilterPreset p)
 
 void RadioModel::applyRxFilter(int low, int high, bool asVar)
 {
-    vfoA.edges = orderedFilter(low, high);
+    vfoA.edges = remapFilter(orderedFilter(low, high), vfoA.mode);
     if (asVar)
         vfoA.filter = FilterPreset::Var1;
     if (filterSync)
@@ -139,6 +139,29 @@ void RadioModel::setBand(Band band)
     emit stateChanged();
 }
 
+void RadioModel::setFrequency(qint64 hz, bool vfoB, bool snapToStep)
+{
+    if (snapToStep)
+        hz = snapNearest(hz, std::max(1, tuneStepHz));
+    hz = std::clamp(hz, 100000LL, 61000000LL);
+    VfoState& v = vfoB ? this->vfoB : vfoA;
+    if (v.frequency == hz && v.band == bandForFrequency(hz))
+        return;
+    v.frequency = hz;
+    v.band = bandForFrequency(hz);
+    emit frequencyChanged();
+}
+
+void RadioModel::tuneBy(int direction, qint64 stepHz, bool vfoB)
+{
+    if (direction == 0)
+        return;
+    if (stepHz <= 0)
+        stepHz = std::max(1, tuneStepHz);
+    VfoState& v = vfoB ? this->vfoB : vfoA;
+    setFrequency(snapTune(v.frequency, stepHz, direction), vfoB, false);
+}
+
 void RadioModel::loadSettings()
 {
     QSettings s(QStringLiteral("Brick2SDR"), QStringLiteral("Console"));
@@ -152,6 +175,9 @@ void RadioModel::loadSettings()
     tx.txFilterHigh = s.value(QStringLiteral("txHigh"), tx.txFilterHigh).toInt();
     filterSync = s.value(QStringLiteral("filterSync"), filterSync).toBool();
     sampleRate = s.value(QStringLiteral("sampleRate"), sampleRate).toInt();
+    tuneStepHz = s.value(QStringLiteral("tuneStep"), tuneStepHz).toInt();
+    if (tuneStepHz < 1)
+        tuneStepHz = 1000;
     rx1.afGain = s.value(QStringLiteral("af"), rx1.afGain).toInt();
     tx.drive = s.value(QStringLiteral("drive"), tx.drive).toInt();
     tx.micGain = s.value(QStringLiteral("mic"), tx.micGain).toInt();
@@ -183,6 +209,7 @@ void RadioModel::loadSettings()
     if (vfoA.filter != FilterPreset::Var1 && vfoA.filter != FilterPreset::Var2
         && !s.contains(QStringLiteral("rxLow")))
         vfoA.edges = defaultFilter(vfoA.mode, vfoA.filter);
+    vfoA.edges = remapFilter(vfoA.edges, vfoA.mode);
 }
 
 void RadioModel::saveSettings() const
@@ -198,6 +225,7 @@ void RadioModel::saveSettings() const
     s.setValue(QStringLiteral("txHigh"), tx.txFilterHigh);
     s.setValue(QStringLiteral("filterSync"), filterSync);
     s.setValue(QStringLiteral("sampleRate"), sampleRate);
+    s.setValue(QStringLiteral("tuneStep"), tuneStepHz);
     s.setValue(QStringLiteral("af"), rx1.afGain);
     s.setValue(QStringLiteral("drive"), tx.drive);
     s.setValue(QStringLiteral("mic"), tx.micGain);

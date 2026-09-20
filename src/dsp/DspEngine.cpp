@@ -2,12 +2,25 @@
 
 #include "core/RadioModel.h"
 
+#include <QDir>
+#include <QStandardPaths>
+
 #include <algorithm>
 #include <cmath>
-#include <numeric>
+#include <cstring>
+
+extern "C" {
+#include "wdsp.h"
+}
 
 namespace brick2 {
+
 namespace {
+
+constexpr int kRxSAv = 1;
+constexpr int kTxMicPk = 0;
+constexpr int kTxAlcPk = 13;
+constexpr int kTxAlcGain = 15;
 
 void fftRadix2(std::vector<std::complex<float>>& a, bool inverse)
 {
@@ -41,187 +54,255 @@ void fftRadix2(std::vector<std::complex<float>>& a, bool inverse)
     }
 }
 
-std::vector<std::complex<float>> designBandpass(int taps, int rate, int low, int high)
-{
-    taps |= 1;
-    std::vector<std::complex<float>> h(taps);
-    const double nyq = rate / 2.0;
-    const double f1 = std::clamp(low / nyq, -0.99, 0.99);
-    const double f2 = std::clamp(high / nyq, -0.99, 0.99);
-    const int m = taps / 2;
-    for (int n = 0; n < taps; ++n) {
-        const int k = n - m;
-        const double win = 0.54 - 0.46 * std::cos(kTwoPi * n / (taps - 1));
-        double re = 0;
-        double im = 0;
-        if (k == 0) {
-            re = f2 - f1;
-        } else {
-            re = (std::sin(kPi * f2 * k) - std::sin(kPi * f1 * k)) / (kPi * k);
-            im = (std::cos(kPi * f1 * k) - std::cos(kPi * f2 * k)) / (kPi * k);
-        }
-        h[n] = {float(re * win), float(im * win)};
-    }
-    return h;
-}
-
-std::vector<float> designRealLowpass(int taps, int rate, int cutoffHz)
-{
-    taps |= 1;
-    std::vector<float> h(taps);
-    const double nyq = rate / 2.0;
-    const double f = std::clamp(cutoffHz / nyq, 0.002, 0.95);
-    const int m = taps / 2;
-    for (int n = 0; n < taps; ++n) {
-        const int k = n - m;
-        const double win = 0.54 - 0.46 * std::cos(kTwoPi * n / (taps - 1));
-        const double re = (k == 0) ? f : std::sin(kPi * f * k) / (kPi * k);
-        h[n] = float(re * win);
-    }
-    return h;
-}
-
 } // namespace
 
 DspEngine::DspEngine(RadioModel* model, QObject* parent)
     : QObject(parent)
     , m_model(model)
 {
-    m_fftIn.assign(kFftSize, {});
-    m_fftOut.assign(kFftSize, {});
-    m_window.resize(kFftSize);
-    m_nrNoise.assign(kFftSize / 2 + 1, 1e-6f);
-    m_waterfallAcc.assign(kFftSize, -140.f);
-    m_eqState.assign(40, 0.f);
-    for (int i = 0; i < kFftSize; ++i)
-        m_window[i] = float(0.5 - 0.5 * std::cos(kTwoPi * i / (kFftSize - 1)));
-    rebuildFilters();
-    buildTxFilters();
+    m_rxIn.assign(size_t(kBlock) * 2, 0.0);
+    m_rxOut.assign(size_t(kBlock) * 8, 0.0);
+    m_txIn.assign(size_t(kBlock) * 2, 0.0);
+    m_txOut.assign(size_t(kBlock) * 8, 0.0);
+    m_fftIn.assign(kFft, {});
+    m_fftOut.assign(kFft, {});
+    m_window.resize(kFft);
+    m_fftAvg.assign(kFft, -140.f);
+    m_frame.db.fill(-140.f, kFft);
+    for (int i = 0; i < kFft; ++i)
+        m_window[size_t(i)] = float(0.5 - 0.5 * std::cos(kTwoPi * i / (kFft - 1)));
+
+    const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    QDir().mkpath(data);
+    const QByteArray path = QDir::toNativeSeparators(data + QLatin1Char('/')).toLocal8Bit();
+    WDSPwisdom(const_cast<char*>(path.constData()));
+
+    ensureChannels();
 }
 
-void DspEngine::buildTxFilters()
+DspEngine::~DspEngine()
 {
-    const int lo = std::max(80, m_model->tx.txFilterLow);
-    const int hi = std::clamp(m_model->tx.txFilterHigh, lo + 200, 5000);
-    const Mode mode = m_model->vfoA.mode;
-    int f1 = lo;
-    int f2 = hi;
-    if (isLowerSideband(mode)) {
-        f1 = -hi;
-        f2 = -lo;
-    } else if (isAm(mode) || mode == Mode::DSB || mode == Mode::FM) {
-        f1 = -hi;
-        f2 = hi;
-    }
-    m_txFir = designBandpass(97, kAudioRate, f1, f2);
-    m_txDelay.assign(m_txFir.size(), {});
-    m_txPos = 0;
-    m_lastTxLow = lo;
-    m_lastTxHigh = hi;
-    m_lastTxMode = mode;
+    destroyChannels();
 }
 
-void DspEngine::rebuildFilters()
+int DspEngine::wdspMode(Mode m) const
 {
-    const auto e = m_model->vfoA.edges;
-    const Mode mode = m_model->vfoA.mode;
-    int cut = std::max(200, std::abs(e.high - e.low) / 2);
-    m_shiftHz = 0.5 * (e.low + e.high);
-    if (isAm(mode) || mode == Mode::DSB || mode == Mode::FM) {
-        m_shiftHz = 0;
-        cut = std::max(std::abs(e.low), std::abs(e.high));
+    switch (m) {
+    case Mode::LSB: return 0;
+    case Mode::USB: return 1;
+    case Mode::DSB: return 2;
+    case Mode::CWL: return 3;
+    case Mode::CWU: return 4;
+    case Mode::FM: return 5;
+    case Mode::AM: return 6;
+    case Mode::DIGU: return 7;
+    case Mode::SPEC: return 8;
+    case Mode::DIGL: return 9;
+    case Mode::SAM: return 10;
+    case Mode::DRM: return 11;
     }
-    m_lpf = designRealLowpass(97, m_model->sampleRate, cut);
-    m_delay.assign(m_lpf.size(), {});
-    m_firPos = 0;
-    m_lastRate = m_model->sampleRate;
-    m_lastLow = e.low;
-    m_lastHigh = e.high;
-    m_lastMode = mode;
+    return 1;
+}
+
+void DspEngine::ensureChannels()
+{
+    const int rate = std::max(48000, m_model->sampleRate);
+    if (m_open && m_openRate == rate)
+        return;
+    destroyChannels();
+
+    OpenChannel(kRxCh, kBlock, kBlock, rate, kAudioRate, kAudioRate, 0, 1, 0.010, 0.025, 0.000, 0.010, 1);
+    OpenChannel(kTxCh, kBlock, kBlock, kAudioRate, kAudioRate, rate, 1, 0, 0.010, 0.025, 0.000, 0.010, 1);
+    SetChannelState(kRxCh, 1, 0);
+
+    create_anbEXT(0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 0.05);
+    create_nobEXT(0, 0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 0.05);
+    m_anb = true;
+    m_nob = true;
+
+    int ok = 0;
+    XCreateAnalyzer(kDisp, &ok, 262144, 1, 1, nullptr);
+    int flp[1] = {0};
+    const int overlap = kFft - kBlock;
+    const int maxW = kFft * 4;
+    SetAnalyzer(kDisp, 1, 1, 1, flp, kFft, kBlock, 6, 0.0, overlap, 0, 0.0, 0.0, kPixels, 1, 0, 0.0, 0.0,
+                maxW);
+    SetDisplaySampleRate(kDisp, rate);
+    SetDisplayDetectorMode(kDisp, 0, 0);
+    SetDisplayAverageMode(kDisp, 0, 3);
+    SetDisplayNumAverage(kDisp, 0, 4);
+
+    m_openRate = rate;
+    m_open = true;
+    applyRxControls();
+    applyTxControls();
+}
+
+void DspEngine::destroyChannels()
+{
+    if (!m_open)
+        return;
+    SetChannelState(kRxCh, 0, 1);
+    SetChannelState(kTxCh, 0, 1);
+    CloseChannel(kRxCh);
+    CloseChannel(kTxCh);
+    if (m_anb)
+        destroy_anbEXT(0);
+    if (m_nob)
+        destroy_nobEXT(0);
+    DestroyAnalyzer(kDisp);
+    m_anb = m_nob = m_open = false;
+}
+
+void DspEngine::applyRxControls()
+{
+    if (!m_open)
+        return;
+    const auto e = remapFilter(m_model->vfoA.edges, m_model->vfoA.mode);
+    SetRXAMode(kRxCh, wdspMode(m_model->vfoA.mode));
+    RXASetPassband(kRxCh, e.low, e.high);
+    SetRXAAGCMode(kRxCh, int(m_model->rx1.agc));
+    SetRXAAGCHang(kRxCh, m_model->rx1.agcHang);
+    SetRXAAGCTop(kRxCh, 60.0 + m_model->rx1.agcGain * 0.6);
+    SetRXAANRRun(kRxCh, m_model->rx1.nr ? 1 : 0);
+    SetRXAEMNRRun(kRxCh, m_model->rx1.nr2 ? 1 : 0);
+    SetRXAANFRun(kRxCh, m_model->rx1.anf ? 1 : 0);
+    SetRXASNBARun(kRxCh, m_model->rx1.snb ? 1 : 0);
+    SetEXTANBRun(0, m_model->rx1.nb ? 1 : 0);
+    SetEXTNOBRun(0, m_model->rx1.nb2 ? 1 : 0);
+    SetRXAPanelSelect(kRxCh, 2);
+    SetRXAPanelBinaural(kRxCh, m_model->rx1.binaural ? 1 : 0);
+    SetRXAPanelCopy(kRxCh, m_model->rx1.binaural ? 0 : 1);
+    const double af = m_model->rx1.mute ? 0.0 : std::max(0.05, m_model->rx1.afGain / 50.0);
+    SetRXAPanelGain1(kRxCh, af);
+    SetRXAAMSQRun(kRxCh, m_model->rx1.squelch ? 1 : 0);
+    SetRXAAMSQThreshold(kRxCh, double(m_model->rx1.squelchThresh));
+}
+
+void DspEngine::applyTxControls()
+{
+    if (!m_open)
+        return;
+    const Mode mode = m_model->vfoA.mode;
+    SetTXAMode(kTxCh, wdspMode(mode));
+    const double lo = m_model->tx.txFilterLow;
+    const double hi = m_model->tx.txFilterHigh;
+    if (isLowerSideband(mode))
+        SetTXABandpassFreqs(kTxCh, -hi, -lo);
+    else if (isAm(mode) || mode == Mode::DSB || mode == Mode::FM)
+        SetTXABandpassFreqs(kTxCh, -hi, hi);
+    else
+        SetTXABandpassFreqs(kTxCh, lo, hi);
+    SetTXAALCSt(kTxCh, 1);
+    SetTXACompressorRun(kTxCh, m_model->tx.comp ? 1 : 0);
+    SetTXALevelerSt(kTxCh, m_model->tx.lev ? 1 : 0);
+    SetTXACFCOMPRun(kTxCh, m_model->tx.cfc ? 1 : 0);
+    SetTXAPanelGain1(kTxCh, m_model->tx.micGain / 70.0);
+
+    if (m_model->ps.twoTone) {
+        SetTXAPreGenMode(kTxCh, 1);
+        SetTXAPreGenRun(kTxCh, 1);
+    } else if (m_model->tune) {
+        SetTXAPreGenMode(kTxCh, 0);
+        SetTXAPreGenToneFreq(kTxCh, 1000.0);
+        SetTXAPreGenToneMag(kTxCh, 0.5);
+        SetTXAPreGenRun(kTxCh, 1);
+    } else {
+        SetTXAPreGenRun(kTxCh, 0);
+    }
+
+    const int on = m_model->isTransmitting() ? 1 : 0;
+    SetChannelState(kTxCh, on, 0);
+    if (!m_model->dup)
+        SetChannelState(kRxCh, on ? 0 : 1, 0);
+    else
+        SetChannelState(kRxCh, 1, 0);
 }
 
 void DspEngine::processIq(int ddc, const QVector<float>& interleavedIq)
 {
     if (ddc != 0 || interleavedIq.size() < 2)
         return;
-    const auto e = m_model->vfoA.edges;
-    if (m_lastRate != m_model->sampleRate || m_lastLow != e.low || m_lastHigh != e.high
-        || m_lastMode != m_model->vfoA.mode)
-        rebuildFilters();
+    std::lock_guard<std::mutex> lock(m_lock);
+    ensureChannels();
+    applyRxControls();
+
+    const float rf = std::pow(10.f, m_model->rx1.rfGain / 20.f);
     if (m_lastTuneHz != m_model->vfoA.frequency) {
         m_lastTuneHz = m_model->vfoA.frequency;
-        std::fill(m_waterfallAcc.begin(), m_waterfallAcc.end(), -140.f);
+        std::fill(m_fftAvg.begin(), m_fftAvg.end(), -140.f);
         m_fftFill = 0;
     }
-
-    std::vector<std::complex<float>> buf;
-    buf.reserve(interleavedIq.size() / 2);
-    for (int i = 0; i + 1 < interleavedIq.size(); i += 2)
-        buf.push_back({interleavedIq[i], interleavedIq[i + 1]});
-    const float rf = std::pow(10.f, m_model->rx1.rfGain / 20.f);
-    for (auto& s : buf) {
-        m_dcI = m_dcI * 0.999f + s.real() * 0.001f;
-        m_dcQ = m_dcQ * 0.999f + s.imag() * 0.001f;
-        s -= std::complex<float>(m_dcI, m_dcQ);
-        s *= rf;
-        if (m_model->rx1.nb || m_model->rx1.nb2 || m_model->rx1.snb) {
-            float oi = s.real(), oq = s.imag();
-            noiseBlanker(std::abs(s), s.real(), s.imag(), oi, oq);
-            s = {oi, oq};
-        }
+    for (int i = 0; i + 1 < interleavedIq.size(); i += 2) {
+        double i0 = double(interleavedIq[i]) * double(rf);
+        double q0 = double(interleavedIq[i + 1]) * double(rf);
+        m_dcI = m_dcI * 0.999 + i0 * 0.001;
+        m_dcQ = m_dcQ * 0.999 + q0 * 0.001;
+        i0 -= m_dcI;
+        q0 -= m_dcQ;
+        runSpectrum(float(i0), float(q0));
+        const int p = m_rxFill;
+        m_rxIn[size_t(p) * 2] = i0;
+        m_rxIn[size_t(p) * 2 + 1] = q0;
+        ++m_rxFill;
+        if (m_rxFill >= kBlock)
+            pushRxBlock();
     }
 
-    runSpectrum(buf);
+    m_frame.sMeter = float(GetRXAMeter(kRxCh, kRxSAv));
+    m_model->meters.sMeter = m_frame.sMeter;
+    if (!m_model->isTransmitting())
+        m_model->meters.alc = 0;
+    emit frameReady(m_frame);
+    emit audioReady();
+}
 
-    std::vector<float> audio;
-    demodBlock(buf, audio);
+void DspEngine::pushRxBlock()
+{
+    if (m_anb)
+        xanbEXT(0, m_rxIn.data(), m_rxIn.data());
+    if (m_nob)
+        xnobEXT(0, m_rxIn.data(), m_rxIn.data());
+    Spectrum0(1, kDisp, 0, 0, m_rxIn.data());
 
-    if (m_model->rx1.nr || m_model->rx1.nr2)
-        spectralNr(audio);
+    int err = 0;
+    fexchange0(kRxCh, m_rxIn.data(), m_rxOut.data(), &err);
 
-    if (m_model->rx1.anf) {
-        for (auto& x : audio) {
-            float yhat = 0.f;
-            for (int t = 0; t < 8; ++t)
-                yhat += m_anfW[t] * m_anfX[t];
-            const float e = x - yhat;
-            for (int t = 7; t > 0; --t)
-                m_anfX[t] = m_anfX[t - 1];
-            m_anfX[0] = x;
-            const float mu = 0.04f;
-            for (int t = 0; t < 8; ++t)
-                m_anfW[t] += mu * e * m_anfX[t];
-            x = e;
-        }
-    }
-
-    const float af = m_model->rx1.afGain / 100.f;
-    m_frame.audio.resize(int(audio.size()));
-    m_frame.scope.resize(std::min(512, int(audio.size())));
-    for (int i = 0; i < int(audio.size()); ++i) {
-        float y = audio[i] * af;
-        if (m_model->rx1.squelch && m_frame.sMeter < float(m_model->rx1.squelchThresh))
-            y = 0;
-        if (m_model->rx1.mute || (m_model->isTransmitting() && !m_model->dup))
-            y = 0;
+    const int outN = kBlock * kAudioRate / std::max(1, m_openRate);
+    m_frame.audio.resize(outN);
+    m_frame.scope.resize(std::min(512, outN));
+    const bool mute = m_model->rx1.mute || (m_model->isTransmitting() && !m_model->dup);
+    for (int i = 0; i < outN; ++i) {
+        float y = mute ? 0.f : float(m_rxOut[size_t(i) * 2]);
+        float r = mute ? 0.f : float(m_rxOut[size_t(i) * 2 + 1]);
         y = std::clamp(y, -1.f, 1.f);
+        r = std::clamp(r, -1.f, 1.f);
         m_frame.audio[i] = y;
-        float r = y;
-        if (m_model->rx1.binaural) {
-            m_binDly.push_back(y);
-            if (m_binDly.size() > 16) {
-                r = m_binDly.front();
-                m_binDly.pop_front();
-            }
-        }
         m_spkQueue.push_back(qint16(y * 32000.f));
         m_spkQueue.push_back(qint16(r * 32000.f));
         if (i < m_frame.scope.size())
             m_frame.scope[i] = y;
     }
+    m_rxFill = 0;
+    std::fill(m_rxIn.begin(), m_rxIn.begin() + kBlock * 2, 0.0);
+}
 
-    emit frameReady(m_frame);
-    emit audioReady();
+void DspEngine::runSpectrum(float i, float q)
+{
+    m_fftIn[size_t(m_fftFill)] = std::complex<float>(i, -q) * m_window[size_t(m_fftFill)];
+    ++m_fftFill;
+    if (m_fftFill < kFft)
+        return;
+    m_fftOut = m_fftIn;
+    fftRadix2(m_fftOut, false);
+    m_frame.db.resize(kFft);
+    for (int n = 0; n < kFft; ++n) {
+        const auto z = m_fftOut[size_t((n + kFft / 2) % kFft)];
+        const float p = 20.f * std::log10(std::abs(z) / float(kFft) + 1e-12f);
+        m_fftAvg[size_t(n)] = m_fftAvg[size_t(n)] * 0.72f + p * 0.28f;
+        m_frame.db[n] = m_fftAvg[size_t(n)];
+    }
+    m_fftFill = 0;
 }
 
 void DspEngine::processMic(const QVector<float>& mic)
@@ -229,21 +310,11 @@ void DspEngine::processMic(const QVector<float>& mic)
     const bool wasOpen = m_model->voxOpen;
     float peak = 0;
     for (float x : mic) {
-        const float dcIn = x;
-        m_dcY = dcIn - m_dcX + 0.995f * m_dcY;
-        m_dcX = dcIn;
-        x = m_dcY;
         x *= m_model->tx.micGain / 70.f;
         m_voxEnv = m_voxEnv * 0.995f + std::abs(x) * 0.005f;
-        if (m_model->tx.comp) {
-            m_compEnv = std::max(std::abs(x), m_compEnv * 0.999f);
-            const float t = std::pow(10.f, -m_model->tx.compLevel / 20.f);
-            if (m_compEnv > t)
-                x *= t / m_compEnv;
-        }
         peak = std::max(peak, std::abs(x));
         m_micFifo.push_back(x);
-        if (m_micFifo.size() > 8192)
+        if (m_micFifo.size() > 16384)
             m_micFifo.pop_front();
     }
     m_frame.mic = peak > 1e-6f ? 20.f * std::log10(peak) : -40.f;
@@ -265,82 +336,40 @@ void DspEngine::processMic(const QVector<float>& mic)
         emit m_model->transmitChanged();
 }
 
-float DspEngine::popMic()
+void DspEngine::pushTxBlock()
 {
-    if (m_micFifo.empty())
-        return 0.f;
-    const float x = m_micFifo.front();
-    m_micFifo.pop_front();
-    return x;
-}
-
-std::complex<float> DspEngine::txSsb48(float audio)
-{
-    if (m_txFir.empty())
-        return {audio, 0.f};
-    const int n = int(m_txFir.size());
-    m_txPos = (m_txPos + 1) % n;
-    m_txDelay[size_t(m_txPos)] = {audio, 0.f};
-    std::complex<float> acc{0.f, 0.f};
-    int j = m_txPos;
-    for (int t = 0; t < n; ++t) {
-        acc += m_txFir[size_t(t)] * m_txDelay[size_t(j)];
-        if (--j < 0)
-            j = n - 1;
+    for (int i = 0; i < kBlock; ++i) {
+        float a = 0.f;
+        if (!m_micFifo.empty() && !m_model->tune && !m_model->ps.twoTone) {
+            a = m_micFifo.front();
+            m_micFifo.pop_front();
+        }
+        m_txIn[size_t(i) * 2] = double(a);
+        m_txIn[size_t(i) * 2 + 1] = 0.0;
     }
-    return acc * 2.2f;
+    int err = 0;
+    fexchange0(kTxCh, m_txIn.data(), m_txOut.data(), &err);
+    const int outN = kBlock * std::max(1, m_openRate) / kAudioRate;
+    for (int i = 0; i < outN; ++i) {
+        m_txQueue.push_back({float(m_txOut[size_t(i) * 2]), float(m_txOut[size_t(i) * 2 + 1])});
+    }
+    m_model->meters.alc = float(GetTXAMeter(kTxCh, kTxAlcGain));
+    m_frame.alc = float(GetTXAMeter(kTxCh, kTxAlcPk));
+    m_frame.mic = float(GetTXAMeter(kTxCh, kTxMicPk));
 }
 
 void DspEngine::generateTx(int samples192k)
 {
     if (!m_model->isTransmitting() || samples192k <= 0)
         return;
-    const Mode mode = m_model->vfoA.mode;
-    const int lo = std::max(80, m_model->tx.txFilterLow);
-    const int hi = std::clamp(m_model->tx.txFilterHigh, lo + 200, 5000);
-    if (m_txFir.empty() || lo != m_lastTxLow || hi != m_lastTxHigh || mode != m_lastTxMode)
-        buildTxFilters();
-
-    const double dt48 = kTwoPi / double(kAudioRate);
-
-    for (int n = 0; n < samples192k; ++n) {
-        if ((m_interp % 4) == 0) {
-            float audio = 0.f;
-            if (m_model->ps.twoTone) {
-                audio = 0.42f * float(std::sin(m_tone1) + std::sin(m_tone2));
-                m_tone1 += dt48 * 700.0;
-                m_tone2 += dt48 * 1900.0;
-            } else if (m_model->tune) {
-                audio = 0.72f * float(std::sin(m_nco));
-                m_nco += dt48 * 1000.0;
-            } else {
-                audio = popMic();
-            }
-            audio = std::tanh(audio);
-            m_ssbPrev = m_ssbCurr;
-            if (mode == Mode::AM) {
-                const float a = (1.f + 0.85f * audio) * 0.55f;
-                m_ssbCurr = {a, 0.f};
-            } else if (mode == Mode::FM) {
-                m_nco += double(audio) * 0.55;
-                m_ssbCurr = {float(std::cos(m_nco)), float(std::sin(m_nco))};
-            } else {
-                m_ssbCurr = txSsb48(audio);
-            }
-        }
-        const float t = float(m_interp % 4) / 4.f;
-        const float w = t * t * (3.f - 2.f * t);
-        std::complex<float> s = m_ssbPrev * (1.f - w) + m_ssbCurr * w;
-        const float mag = std::abs(s);
-        if (mag > 0.94f)
-            m_alcGain *= 0.94f / mag;
-        else
-            m_alcGain += (1.f - m_alcGain) * 0.0005f;
-        m_alcGain = std::clamp(m_alcGain, 0.2f, 1.f);
-        s *= m_alcGain;
-        m_model->meters.alc = 20.f * std::log10(std::max(0.05f, m_alcGain));
-        m_txQueue.push_back(s);
-        ++m_interp;
+    std::lock_guard<std::mutex> lock(m_lock);
+    ensureChannels();
+    applyTxControls();
+    const int outN = kBlock * std::max(1, m_openRate) / kAudioRate;
+    int produced = 0;
+    while (produced < samples192k) {
+        pushTxBlock();
+        produced += outN;
     }
     emit txIqReady();
 }
@@ -357,172 +386,6 @@ QVector<qint16> DspEngine::takeSpeaker()
     QVector<qint16> out(m_spkQueue.begin(), m_spkQueue.end());
     m_spkQueue.clear();
     return out;
-}
-
-void DspEngine::runSpectrum(const std::vector<std::complex<float>>& iq)
-{
-    for (auto s : iq) {
-        if (m_fftFill < kFftSize) {
-            m_fftIn[m_fftFill] = s * m_window[m_fftFill];
-            ++m_fftFill;
-        }
-        if (m_fftFill >= kFftSize) {
-            m_fftOut = m_fftIn;
-            fftRadix2(m_fftOut, false);
-            m_frame.db.resize(kFftSize);
-            const float avg = std::max(1, m_model->display.avg);
-            float peak = 1e-12f;
-            for (int i = 0; i < kFftSize; ++i) {
-                const int src = (i + kFftSize / 2) % kFftSize;
-                const float mag = std::norm(m_fftOut[src]) + 1e-20f;
-                const float db = 10.f * std::log10(mag) - 90.f;
-                m_waterfallAcc[i] += (db - m_waterfallAcc[i]) / avg;
-                m_frame.db[i] = m_waterfallAcc[i];
-                peak = std::max(peak, mag);
-            }
-            m_frame.sMeter = 10.f * std::log10(peak) - 80.f;
-            m_model->meters.sMeter = m_frame.sMeter;
-            m_fftFill = kFftSize / 4;
-            std::rotate(m_fftIn.begin(), m_fftIn.begin() + 3 * kFftSize / 4, m_fftIn.end());
-        }
-    }
-}
-
-void DspEngine::demodBlock(const std::vector<std::complex<float>>& iq, std::vector<float>& audio)
-{
-    const int decim = std::max(1, m_model->sampleRate / kAudioRate);
-    const int n = int(m_lpf.size());
-    if (n <= 0)
-        return;
-    audio.reserve(iq.size() / decim + 1);
-    const double dphi = kTwoPi * m_shiftHz / double(std::max(1, m_model->sampleRate));
-    int idx = 0;
-    for (auto s : iq) {
-        s *= std::exp(std::complex<float>(0.f, float(-m_bfo)));
-        m_bfo += dphi;
-        if (m_bfo > kTwoPi)
-            m_bfo -= kTwoPi;
-        else if (m_bfo < -kTwoPi)
-            m_bfo += kTwoPi;
-
-        m_firPos = (m_firPos + 1) % n;
-        m_delay[size_t(m_firPos)] = s;
-        if ((++idx % decim) != 0)
-            continue;
-
-        std::complex<float> acc{0.f, 0.f};
-        int j = m_firPos;
-        for (int t = 0; t < n; ++t) {
-            acc += m_lpf[size_t(t)] * m_delay[size_t(j)];
-            if (--j < 0)
-                j = n - 1;
-        }
-
-        float y = 0;
-        const Mode m = m_model->vfoA.mode;
-        if (m == Mode::AM)
-            y = std::abs(acc);
-        else if (m == Mode::SAM) {
-            const auto err = acc * std::exp(std::complex<float>(0.f, float(-m_pllPhase)));
-            m_pllFreq += 0.001 * err.imag();
-            m_pllPhase += m_pllFreq + 0.05 * err.imag();
-            y = err.real();
-        } else if (m == Mode::FM) {
-            const float ph = std::arg(acc);
-            float d = ph - float(m_fmPhase);
-            while (d > float(kPi))
-                d -= float(kTwoPi);
-            while (d < -float(kPi))
-                d += float(kTwoPi);
-            m_fmPhase = ph;
-            y = d * 4.f;
-        } else {
-            y = acc.real() * 2.f;
-        }
-
-        audio.push_back(agc(y));
-    }
-}
-
-float DspEngine::agc(float x)
-{
-    if (m_model->rx1.agc == AgcMode::Off)
-        return x * (m_model->rx1.agcGain / 50.f);
-    const float mag = std::abs(x) + 1e-9f;
-    const float target = 0.2f;
-    const float decay = (m_model->rx1.agc == AgcMode::Fast)     ? 0.02f
-                        : (m_model->rx1.agc == AgcMode::Med)    ? 0.005f
-                        : (m_model->rx1.agc == AgcMode::Slow)   ? 0.001f
-                                                                : 0.0003f;
-    if (mag * m_agcGain > target) {
-        m_agcGain *= 0.92f;
-        m_agcHang = float(m_model->rx1.agcHang);
-    } else if (m_agcHang > 0) {
-        m_agcHang -= 1;
-    } else {
-        m_agcGain += (target / mag - m_agcGain) * decay;
-    }
-    m_agcGain = std::clamp(m_agcGain, 0.5f, 400.f);
-    return x * m_agcGain;
-}
-
-float DspEngine::noiseBlanker(float mag, float i, float q, float& oi, float& oq)
-{
-    m_nbAvg = m_nbAvg * 0.995f + mag * 0.005f;
-    const float thr = m_nbAvg * (m_model->rx1.nb2 ? 2.2f : m_model->rx1.snb ? 3.5f : 5.5f);
-    if (mag > thr && (m_model->rx1.nb || m_model->rx1.nb2 || m_model->rx1.snb)) {
-        oi = 0;
-        oq = 0;
-        return 0;
-    }
-    oi = i;
-    oq = q;
-    return mag;
-}
-
-void DspEngine::spectralNr(std::vector<float>& audio)
-{
-    if (audio.empty())
-        return;
-    m_nrFifo.insert(m_nrFifo.end(), audio.begin(), audio.end());
-    const int n = 128;
-    if (int(m_nrFifo.size()) < n)
-        return;
-    if (int(m_nrNoise.size()) < n / 2 + 1)
-        m_nrNoise.assign(n / 2 + 1, 1e-6f);
-
-    std::vector<float> work(m_nrFifo.begin(), m_nrFifo.end());
-    std::vector<std::complex<float>> spec(n);
-    const float strength = m_model->rx1.nr2 ? 2.2f : 1.25f;
-    for (int off = 0; off + n <= int(work.size()); off += n / 2) {
-        for (int i = 0; i < n; ++i) {
-            const float w = float(0.5 - 0.5 * std::cos(kTwoPi * i / (n - 1)));
-            spec[i] = {work[off + i] * w, 0.f};
-        }
-        fftRadix2(spec, false);
-        for (int i = 0; i < n / 2; ++i) {
-            const float p = std::norm(spec[i]);
-            m_nrNoise[i] += (p - m_nrNoise[i]) * 0.05f;
-            const float g = std::max(0.02f, 1.f - strength * m_nrNoise[i] / (p + 1e-12f));
-            spec[i] *= g;
-            if (i)
-                spec[n - i] = std::conj(spec[i]);
-        }
-        fftRadix2(spec, true);
-        for (int i = 0; i < n / 2 && off + i < int(work.size()); ++i)
-            work[off + i] = spec[i].real();
-    }
-    const int start = std::max(0, int(work.size()) - int(audio.size()));
-    for (int i = 0; i < int(audio.size()); ++i)
-        audio[i] = work[start + i];
-    const int keep = n;
-    if (int(m_nrFifo.size()) > keep)
-        m_nrFifo.erase(m_nrFifo.begin(), m_nrFifo.end() - keep);
-}
-
-std::complex<float> DspEngine::modulate(float mic)
-{
-    return txSsb48(mic);
 }
 
 } // namespace brick2

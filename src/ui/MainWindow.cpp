@@ -11,10 +11,13 @@
 #include "ui/SetupDialog.h"
 #include "ui/Theme.h"
 
+#include <QAbstractSpinBox>
+#include <QApplication>
 #include <QButtonGroup>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenuBar>
@@ -59,15 +62,18 @@ MainWindow::MainWindow()
             m_proto->sendTxIq(s.real(), s.imag());
     });
     connect(m_display, &PanafallWidget::clickTune, this, [this](qint64 hz) {
-        m_model->vfoA.frequency = std::clamp(hz, 100000LL, 61000000LL);
-        m_model->vfoA.band = bandForFrequency(m_model->vfoA.frequency);
-        refreshVfo();
-        emit m_model->frequencyChanged();
+        m_model->setFrequency(hz, false, true);
     });
     connect(m_model, &RadioModel::frequencyChanged, this, [this] {
         refreshVfo();
         m_display->update();
         m_proto->pushControl();
+    });
+    connect(m_model, &RadioModel::stateChanged, this, [this] {
+        if (m_lcdA)
+            m_lcdA->setStepHz(m_model->tuneStepHz);
+        if (m_lcdB)
+            m_lcdB->setStepHz(m_model->tuneStepHz);
     });
     connect(m_model, &RadioModel::modeChanged, this, [this] { refreshVfo(); });
     connect(m_proto, &Protocol2Engine::connected, this, [this](const RadioInfo& info) {
@@ -143,6 +149,7 @@ void MainWindow::buildMenus()
     file->addAction(QStringLiteral("Setup…"), this, [this] {
         SetupDialog dlg(m_model, m_audio, this);
         dlg.exec();
+        refreshVfo();
         m_audio->start();
         if (m_model->cat.enabled)
             m_cat->start();
@@ -186,6 +193,7 @@ QPushButton* MainWindow::key(const QString& text)
     b->setCursor(Qt::PointingHandCursor);
     b->setCheckable(true);
     b->setAutoExclusive(false);
+    b->setFocusPolicy(Qt::NoFocus);
     return b;
 }
 
@@ -266,9 +274,11 @@ void MainWindow::buildUi()
     m_ipEdit->setFixedWidth(130);
     auto* disc = new QPushButton(QStringLiteral("DISCOVER"));
     disc->setProperty("role", "ghost");
+    disc->setFocusPolicy(Qt::NoFocus);
     connect(disc, &QPushButton::clicked, this, [this] { m_proto->startDiscovery(); });
     auto* conn = new QPushButton(QStringLiteral("CONNECT"));
     conn->setProperty("role", "ghost");
+    conn->setFocusPolicy(Qt::NoFocus);
     connect(conn, &QPushButton::clicked, this, [this] {
         const QString typed = m_ipEdit->text().trimmed();
         if (!typed.isEmpty()) {
@@ -288,6 +298,7 @@ void MainWindow::buildUi()
     });
     auto* start = new QPushButton(QStringLiteral("START"));
     start->setProperty("role", "power");
+    start->setFocusPolicy(Qt::NoFocus);
     connect(start, &QPushButton::clicked, this, [this] {
         if (!m_ipEdit->text().trimmed().isEmpty()) {
             m_proto->connectToIp(m_ipEdit->text().trimmed());
@@ -298,6 +309,7 @@ void MainWindow::buildUi()
     });
     auto* stop = new QPushButton(QStringLiteral("STOP"));
     stop->setProperty("role", "ghost");
+    stop->setFocusPolicy(Qt::NoFocus);
     connect(stop, &QPushButton::clicked, this, [this] { m_proto->disconnectRadio(); });
     headerLay->addLayout(brandCol);
     headerLay->addStretch();
@@ -316,18 +328,15 @@ void MainWindow::buildUi()
     m_lcdA = new LcdVfo(QStringLiteral("VFO A"));
     m_lcdB = new LcdVfo(QStringLiteral("VFO B"));
     m_meters = new MeterRack;
-    connect(m_lcdA, &LcdVfo::tuned, this, [this](qint64 hz) {
-        m_model->vfoA.frequency = hz;
-        m_model->vfoA.band = bandForFrequency(hz);
-        refreshVfo();
-        emit m_model->frequencyChanged();
-    });
+    connect(m_lcdA, &LcdVfo::tuned, this, [this](qint64 hz) { m_model->setFrequency(hz); });
     connect(m_lcdA, &LcdVfo::stepSelected, this, [this](qint64 step) {
         m_model->tuneStepHz = int(std::max<qint64>(1, step));
+        m_lcdB->setStepHz(step);
     });
-    connect(m_lcdB, &LcdVfo::tuned, this, [this](qint64 hz) {
-        m_model->vfoB.frequency = hz;
-        refreshVfo();
+    connect(m_lcdB, &LcdVfo::tuned, this, [this](qint64 hz) { m_model->setFrequency(hz, true); });
+    connect(m_lcdB, &LcdVfo::stepSelected, this, [this](qint64 step) {
+        m_model->tuneStepHz = int(std::max<qint64>(1, step));
+        m_lcdA->setStepHz(step);
     });
     top->addWidget(m_lcdA, 3);
     top->addWidget(m_meters, 3);
@@ -565,6 +574,7 @@ void MainWindow::buildUi()
     auto addAct = [&](const QString& t, auto fn) {
         auto* b = new QPushButton(t);
         b->setProperty("role", "ghost");
+        b->setFocusPolicy(Qt::NoFocus);
         connect(b, &QPushButton::clicked, this, fn);
         tx->addWidget(b);
     };
@@ -651,6 +661,8 @@ void MainWindow::refreshVfo()
 {
     m_lcdA->setState(m_model->vfoA, false, m_model->isTransmitting());
     m_lcdB->setState(m_model->vfoB, m_model->split, false);
+    m_lcdA->setStepHz(m_model->tuneStepHz);
+    m_lcdB->setStepHz(m_model->tuneStepHz);
     const auto e = m_model->vfoA.edges;
     const int rxHz = std::abs(e.high - e.low);
     const int txHz = std::max(0, m_model->tx.txFilterHigh - m_model->tx.txFilterLow);
@@ -726,6 +738,46 @@ void MainWindow::refreshSelection()
 void MainWindow::refreshMeters()
 {
     m_meters->setReadings(m_model->meters, m_model->isTransmitting());
+}
+
+bool MainWindow::isTypingWidget() const
+{
+    const QWidget* w = QApplication::focusWidget();
+    return qobject_cast<const QAbstractSpinBox*>(w) || qobject_cast<const QLineEdit*>(w)
+        || qobject_cast<const QComboBox*>(w) || qobject_cast<const QSlider*>(w);
+}
+
+void MainWindow::applyTuneKey(int direction, int stepMul)
+{
+    const bool vfoB = QApplication::focusWidget() == m_lcdB;
+    m_model->tuneBy(direction, std::max(1, m_model->tuneStepHz) * std::max(1, stepMul), vfoB);
+}
+
+void MainWindow::keyPressEvent(QKeyEvent* event)
+{
+    if (isTypingWidget()) {
+        QMainWindow::keyPressEvent(event);
+        return;
+    }
+    switch (event->key()) {
+    case Qt::Key_Up:
+    case Qt::Key_Plus:
+        applyTuneKey(1);
+        break;
+    case Qt::Key_Down:
+    case Qt::Key_Minus:
+        applyTuneKey(-1);
+        break;
+    case Qt::Key_PageUp:
+        applyTuneKey(1, 10);
+        break;
+    case Qt::Key_PageDown:
+        applyTuneKey(-1, 10);
+        break;
+    default:
+        QMainWindow::keyPressEvent(event);
+        break;
+    }
 }
 
 } // namespace brick2

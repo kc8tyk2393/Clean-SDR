@@ -217,7 +217,7 @@ void Protocol2Engine::sendTxIq(float i, float q)
     if (m_txIqIndex + 6 > 1444)
         flushTxIq();
     const int ii = enc(i);
-    const int qq = enc(-q);
+    const int qq = enc(q);
     m_txIqBuf[m_txIqIndex++] = char((ii >> 16) & 0xFF);
     m_txIqBuf[m_txIqIndex++] = char((ii >> 8) & 0xFF);
     m_txIqBuf[m_txIqIndex++] = char(ii & 0xFF);
@@ -520,7 +520,7 @@ void Protocol2Engine::parseIq(int ddc, const QByteArray& data)
     int b = 16;
     for (int i = 0; i < n && b + 6 <= data.size(); ++i) {
         samples.push_back(float(be24(p + b)) / 8388607.f);
-        samples.push_back(-float(be24(p + b + 3)) / 8388607.f);
+        samples.push_back(float(be24(p + b + 3)) / 8388607.f);
         b += 6;
     }
     emit iqReceived(ddc, samples);

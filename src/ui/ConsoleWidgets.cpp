@@ -8,6 +8,7 @@
 #include <QPainterPath>
 #include <QWheelEvent>
 #include <algorithm>
+#include <limits>
 
 namespace brick2 {
 namespace {
@@ -115,12 +116,31 @@ void LcdVfo::selectDigit(int index)
     update();
 }
 
-void LcdVfo::nudge(int direction)
+void LcdVfo::setStepHz(qint64 stepHz)
+{
+    int best = m_selected;
+    qint64 bestDiff = std::numeric_limits<qint64>::max();
+    for (int i = 0; i < kDigitCount; ++i) {
+        const qint64 d = std::abs(stepForDigit(i) - stepHz);
+        if (d < bestDiff) {
+            bestDiff = d;
+            best = i;
+        }
+    }
+    if (m_selected == best)
+        return;
+    m_selected = best;
+    update();
+}
+
+void LcdVfo::nudge(int direction, int stepMul)
 {
     if (direction == 0)
         return;
-    const qint64 next = std::clamp(m_vfo.frequency + direction * stepForDigit(m_selected),
-                                   100000LL, 61000000LL);
+    const qint64 step = stepForDigit(m_selected) * std::max(1, stepMul);
+    const qint64 next = snapTune(m_vfo.frequency, step, direction);
+    if (next == m_vfo.frequency)
+        return;
     m_vfo.frequency = next;
     emit tuned(next);
     update();
@@ -271,9 +291,15 @@ void LcdVfo::keyPressEvent(QKeyEvent* event)
     case Qt::Key_Plus:
         nudge(1);
         break;
+    case Qt::Key_PageUp:
+        nudge(1, 10);
+        break;
     case Qt::Key_Down:
     case Qt::Key_Minus:
         nudge(-1);
+        break;
+    case Qt::Key_PageDown:
+        nudge(-1, 10);
         break;
     default:
         QWidget::keyPressEvent(event);

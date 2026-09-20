@@ -5,6 +5,7 @@
 
 #include <QButtonGroup>
 #include <QComboBox>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
@@ -29,6 +30,9 @@ public:
     MainWindow();
     ~MainWindow() override;
 
+protected:
+    void keyPressEvent(QKeyEvent* event) override;
+
 private:
     void buildUi();
     void buildMenus();
@@ -40,6 +44,8 @@ private:
     void applyRxFromUi();
     void applyTxFromUi();
     void syncFilterSpins();
+    void applyTuneKey(int direction, int stepMul = 1);
+    bool isTypingWidget() const;
     QSpinBox* filterSpin(int minv, int maxv, int value);
     QPushButton* key(const QString& text);
     QPushButton* latch(const QString& text, bool* flag, const char* role = "dsp");

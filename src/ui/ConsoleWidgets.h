@@ -13,6 +13,7 @@ class LcdVfo : public QWidget {
 public:
     explicit LcdVfo(const QString& title, QWidget* parent = nullptr);
     void setState(const VfoState& vfo, bool split, bool tx);
+    void setStepHz(qint64 stepHz);
     qint64 selectedStepHz() const;
 
 signals:
@@ -32,7 +33,7 @@ private:
     void layoutDigits();
     int digitAt(const QPoint& pos) const;
     qint64 stepForDigit(int index) const;
-    void nudge(int direction);
+    void nudge(int direction, int stepMul = 1);
     void selectDigit(int index);
 
     QString m_title;

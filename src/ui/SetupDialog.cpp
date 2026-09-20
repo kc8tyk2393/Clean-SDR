@@ -54,6 +54,7 @@ SetupDialog::SetupDialog(RadioModel* model, AudioEngine* audio, QWidget* parent)
         step->setCurrentIndex(step->findData(model->tuneStepHz));
         connect(step, &QComboBox::currentIndexChanged, this, [=] {
             model->tuneStepHz = step->currentData().toInt();
+            emit model->stateChanged();
         });
         auto* apollo = new QCheckBox(QStringLiteral("Apollo SWR/PWR (Brick2)"));
         apollo->setChecked(model->apollo);

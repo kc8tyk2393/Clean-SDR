@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(Brick2SDR VERSION 1.0.0 LANGUAGES CXX)
+project(Brick2SDR VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Multimedia
     Concurrent
 )
+
+add_subdirectory(third_party/wdsp)
 
 qt_add_executable(Brick2SDR
     src/main.cpp
@@ -39,7 +41,10 @@ target_link_libraries(Brick2SDR PRIVATE
     Qt6::Network
     Qt6::Multimedia
     Qt6::Concurrent
+    wdsp
 )
+
+brick2_copy_wdsp_runtime(Brick2SDR)
 
 if(WIN32)
     target_link_libraries(Brick2SDR PRIVATE ws2_32)

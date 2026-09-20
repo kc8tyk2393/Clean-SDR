@@ -2,6 +2,7 @@
 
 #include "core/RadioModel.h"
 
+#include <QKeyEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QWheelEvent>
@@ -17,6 +18,7 @@ PanafallWidget::PanafallWidget(RadioModel* model, QWidget* parent)
 {
     setMinimumHeight(280);
     setMouseTracking(true);
+    setFocusPolicy(Qt::ClickFocus);
     setAutoFillBackground(false);
     m_clock.start();
 }
@@ -115,14 +117,15 @@ void PanafallWidget::paintEvent(QPaintEvent*)
             }
         }
 
-        const int x0 = hzToX(cf + m_model->vfoA.edges.low);
-        const int x1 = hzToX(cf + m_model->vfoA.edges.high);
+        const auto pass = remapFilter(m_model->vfoA.edges, m_model->vfoA.mode);
+        const int x0 = hzToX(cf + pass.low);
+        const int x1 = hzToX(cf + pass.high);
         QColor filt = m_model->display.panFill;
-        filt.setAlpha(38);
+        filt.setAlpha(55);
         p.fillRect(QRect(std::min(x0, x1), 0, std::max(2, std::abs(x1 - x0)), plotH), filt);
         QColor filtEdge = m_model->display.panFill;
-        filtEdge.setAlpha(160);
-        p.setPen(QPen(filtEdge, 1));
+        filtEdge.setAlpha(200);
+        p.setPen(QPen(filtEdge, 1.5));
         p.drawLine(x0, 0, x0, plotH);
         p.drawLine(x1, 0, x1, plotH);
 
@@ -195,7 +198,7 @@ void PanafallWidget::paintEvent(QPaintEvent*)
         p.drawPolyline(s);
     }
 
-    const auto e = m_model->vfoA.edges;
+    const auto e = remapFilter(m_model->vfoA.edges, m_model->vfoA.mode);
     const int rxHz = std::abs(e.high - e.low);
     const int txHz = std::max(0, m_model->tx.txFilterHigh - m_model->tx.txFilterLow);
     p.setPen(QColor(240, 180, 41));
@@ -214,6 +217,7 @@ void PanafallWidget::paintEvent(QPaintEvent*)
 
 void PanafallWidget::mousePressEvent(QMouseEvent* event)
 {
+    setFocus(Qt::MouseFocusReason);
     emit clickTune(hzAt(int(event->position().x())));
 }
 
@@ -230,9 +234,31 @@ void PanafallWidget::wheelEvent(QWheelEvent* event)
         update();
         return;
     }
-    const int d = event->angleDelta().y() > 0 ? m_model->tuneStepHz : -m_model->tuneStepHz;
-    m_model->vfoA.frequency = std::clamp(m_model->vfoA.frequency + d, 100000LL, 61000000LL);
-    emit clickTune(m_model->vfoA.frequency);
+    const int dir = event->angleDelta().y() > 0 ? 1 : -1;
+    m_model->tuneBy(dir);
+}
+
+void PanafallWidget::keyPressEvent(QKeyEvent* event)
+{
+    switch (event->key()) {
+    case Qt::Key_Up:
+    case Qt::Key_Plus:
+        m_model->tuneBy(1);
+        break;
+    case Qt::Key_Down:
+    case Qt::Key_Minus:
+        m_model->tuneBy(-1);
+        break;
+    case Qt::Key_PageUp:
+        m_model->tuneBy(1, std::max(1, m_model->tuneStepHz) * 10);
+        break;
+    case Qt::Key_PageDown:
+        m_model->tuneBy(-1, std::max(1, m_model->tuneStepHz) * 10);
+        break;
+    default:
+        QWidget::keyPressEvent(event);
+        break;
+    }
 }
 
 void PanafallWidget::resizeEvent(QResizeEvent*)
