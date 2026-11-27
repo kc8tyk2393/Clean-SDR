@@ -9,6 +9,7 @@ $Build = Join-Path $Root "build"
 $Payload = Join-Path $Root "dist\payload"
 $OutDir = Join-Path $Root "dist"
 $Msi = Join-Path $OutDir "Brick2SDR-1.0.0.msi"
+$Setup = Join-Path $OutDir "Brick2SDR-1.0.0-Setup.exe"
 
 $Qt = "C:\Users\timda\QtSdk\6.8.3\mingw_64"
 $Mingw = "C:\Users\timda\QtSdk\Tools\mingw1310_64"
@@ -91,5 +92,30 @@ $wixArgs = @(
 & $Wix @wixArgs
 if ($LASTEXITCODE -ne 0) { throw "WiX build failed" }
 
+Write-Host "Building self-extracting setup..."
+$balDir = Join-Path $env:USERPROFILE ".wix\extensions\WixToolset.Bal.wixext"
+$balExt = Get-ChildItem $balDir -Filter "WixToolset.BootstrapperApplications.wixext.dll" -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1 -ExpandProperty FullName
+if (-not $balExt) {
+    & $Wix extension add -g WixToolset.Bal.wixext/6.0.2
+    $balExt = Get-ChildItem $balDir -Filter "WixToolset.BootstrapperApplications.wixext.dll" -Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 1 -ExpandProperty FullName
+}
+if (-not $balExt) { throw "WixToolset.Bal.wixext is not installed" }
+
+$bundle = Join-Path $PSScriptRoot "Bundle.wxs"
+$bundleArgs = @(
+    "build", $bundle,
+    "-arch", "x64",
+    "-ext", $balExt,
+    "-bindpath", $PSScriptRoot,
+    "-bindpath", "Dist=$OutDir",
+    "-out", $Setup,
+    "-pdbtype", "none"
+)
+& $Wix @bundleArgs
+if ($LASTEXITCODE -ne 0) { throw "WiX bundle build failed" }
+
 Write-Host "MSI written to $Msi"
-Get-Item $Msi | Format-List FullName, Length, LastWriteTime
+Write-Host "Self-extracting setup written to $Setup"
+Get-Item $Msi, $Setup | Format-Table Name, Length, LastWriteTime -AutoSize

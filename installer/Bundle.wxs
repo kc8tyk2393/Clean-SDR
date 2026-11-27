@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <Bundle Name="Brick2SDR"
+          Manufacturer="KC8TYK"
+          Version="1.0.0"
+          UpgradeCode="d4e7124e-6a9b-4c18-bf5d-1a2c3d4e5f60"
+          Compressed="yes">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication
+          LicenseFile="License.rtf"
+          Theme="rtfLicense"
+          ShowVersion="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage Id="Brick2SDRMsi"
+                  SourceFile="!(bindpath.Dist)\Brick2SDR-1.0.0.msi"
+                  Vital="yes"
+                  Compressed="yes" />
+    </Chain>
+  </Bundle>
+</Wix>
