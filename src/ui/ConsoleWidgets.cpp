@@ -310,7 +310,7 @@ void LcdVfo::keyPressEvent(QKeyEvent* event)
 MeterRack::MeterRack(QWidget* parent)
     : QWidget(parent)
 {
-    setMinimumSize(280, 118);
+    setMinimumSize(280, 140);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 }
 
@@ -331,11 +331,11 @@ void MeterRack::paintEvent(QPaintEvent*)
     p.setPen(QPen(QColor(36, 44, 54), 1));
     p.drawPath(path);
 
-    const auto row = [&](int y, const QString& name, float t, const QString& val) {
+    const auto row = [&](int y, const QString& name, float t, const QString& val, const QColor& bar) {
         p.setPen(QColor(111, 123, 136));
         p.setFont(QFont(QStringLiteral("Segoe UI"), 7, QFont::Bold));
         p.drawText(12, y + 10, name);
-        drawBar(p, QRect(52, y + 2, width() - 128, 10), t, QColor(226, 61, 61));
+        drawBar(p, QRect(52, y + 2, width() - 128, 10), t, bar);
         p.setPen(QColor(213, 221, 230));
         p.setFont(lcdFont(11, false));
         p.drawText(QRect(width() - 72, y - 1, 64, 16), Qt::AlignRight | Qt::AlignVCenter, val);
@@ -343,13 +343,15 @@ void MeterRack::paintEvent(QPaintEvent*)
 
     const float s = std::clamp((m_m.sMeter + 140.f) / 90.f, 0.f, 1.f);
     const float pwr = std::clamp(m_m.fwdWatts / 15.f, 0.f, 1.f);
+    const float mic = std::clamp((m_m.mic + 40.f) / 40.f, 0.f, 1.f);
     const float swr = std::clamp((m_m.swr - 1.f) / 2.f, 0.f, 1.f);
-    const float alc = std::clamp(-m_m.alc / 20.f, 0.f, 1.f);
+    const float alc = std::clamp(m_m.alc / 20.f, 0.f, 1.f);
 
-    row(10, QStringLiteral("SIG"), s, QStringLiteral("%1 dBm").arg(m_m.sMeter, 0, 'f', 0));
-    row(32, QStringLiteral("PWR"), pwr, QStringLiteral("%1 W").arg(m_m.fwdWatts, 0, 'f', 1));
-    row(54, QStringLiteral("SWR"), swr, QStringLiteral("%1 : 1").arg(m_m.swr, 0, 'f', 2));
-    row(76, QStringLiteral("ALC"), alc, QStringLiteral("%1 dB").arg(m_m.alc, 0, 'f', 1));
+    row(8, QStringLiteral("SIG"), s, QStringLiteral("%1 dBm").arg(m_m.sMeter, 0, 'f', 0), QColor(226, 61, 61));
+    row(28, QStringLiteral("PWR"), pwr, QStringLiteral("%1 W").arg(m_m.fwdWatts, 0, 'f', 1), QColor(226, 61, 61));
+    row(48, QStringLiteral("MIC"), mic, QStringLiteral("%1 dB").arg(m_m.mic, 0, 'f', 0), QColor(62, 200, 200));
+    row(68, QStringLiteral("SWR"), swr, QStringLiteral("%1 : 1").arg(m_m.swr, 0, 'f', 2), QColor(226, 61, 61));
+    row(88, QStringLiteral("ALC"), alc, QStringLiteral("%1 dB").arg(m_m.alc, 0, 'f', 1), QColor(226, 61, 61));
 
     const auto led = [&](int x, const QString& name, bool on, const QColor& c) {
         p.setPen(Qt::NoPen);

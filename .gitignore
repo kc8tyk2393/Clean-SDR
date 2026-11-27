@@ -1,5 +1,8 @@
 /build
 /out
+/dist
+*.msi
+*.wixpdb
 /CMakeUserPresets.json
 .vs
 .idea

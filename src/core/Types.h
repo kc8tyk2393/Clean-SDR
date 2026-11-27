@@ -252,37 +252,43 @@ inline qint64 snapNearest(qint64 hz, qint64 step)
 
 inline quint32 alexFilterWord(qint64 rxHz, qint64 txHz, bool transmitting, bool pureSignal)
 {
-    quint32 filters = transmitting ? 0x08000000u : 0;
-    if (transmitting && pureSignal)
-        filters |= 0x00040000u;
+    quint32 filters = 0;
+    if (transmitting) {
+        filters |= 0x08000000u; // T/R relay
+        if (pureSignal)
+            filters |= 0x00040000u;
+    }
 
-    if (rxHz < 1'500'000)
-        filters |= 0x1000;
+    if (rxHz < 1'800'000)
+        filters |= 0x00001000u;
     else if (rxHz < 6'500'000)
-        filters |= 0x40;
+        filters |= 0x00000040u;
     else if (rxHz < 9'500'000)
-        filters |= 0x20;
+        filters |= 0x00000020u;
     else if (rxHz < 13'000'000)
-        filters |= 0x10;
+        filters |= 0x00000010u;
     else if (rxHz < 20'000'000)
-        filters |= 0x02;
+        filters |= 0x00000002u;
     else if (rxHz < 50'000'000)
-        filters |= 0x04;
+        filters |= 0x00000004u;
     else
-        filters |= 0x80;
+        filters |= 0x00000008u;
 
-    if (txHz > 35'600'000)
-        filters |= 0x08;
-    else if (txHz > 24'000'000)
-        filters |= 0x04;
-    else if (txHz > 16'500'000)
-        filters |= 0x02;
-    else if (txHz > 8'000'000)
-        filters |= 0x10;
-    else if (txHz > 5'000'000)
-        filters |= 0x20;
+    const qint64 lpfHz = transmitting ? txHz : rxHz;
+    if (lpfHz > 35'600'000)
+        filters |= 0x20000000u;
+    else if (lpfHz > 24'000'000)
+        filters |= 0x40000000u;
+    else if (lpfHz > 16'500'000)
+        filters |= 0x80000000u;
+    else if (lpfHz > 8'000'000)
+        filters |= 0x00100000u;
+    else if (lpfHz > 5'000'000)
+        filters |= 0x00200000u;
+    else if (lpfHz > 2'500'000)
+        filters |= 0x00400000u;
     else
-        filters |= 0x40;
+        filters |= 0x00800000u;
 
     filters |= 0x01000000u; // TX ANT1
     return filters;

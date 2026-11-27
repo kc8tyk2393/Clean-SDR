@@ -44,6 +44,7 @@ struct RxDspSettings {
     bool snb = false;
     bool binaural = false;
     bool mute = false;
+    bool muteRadioSpeaker = false;
     bool squelch = false;
     int squelchThresh = -80;
     int afGain = 30;
@@ -76,7 +77,8 @@ struct TxDspSettings {
     bool txFilter = true;
     int txFilterLow = 200;
     int txFilterHigh = 2900;
-    bool micBoost = false;
+    bool micBoost = true;
+    bool micBias = true;
     bool lineIn = false;
     bool phono = false;
 };
@@ -151,7 +153,7 @@ struct PureSignalSettings {
 
 struct MeterReadings {
     float sMeter = -130;
-    float alc = -20;
+    float alc = 0;
     float mic = -20;
     float eq = -20;
     float comp = -20;

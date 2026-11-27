@@ -179,8 +179,12 @@ void RadioModel::loadSettings()
     if (tuneStepHz < 1)
         tuneStepHz = 1000;
     rx1.afGain = s.value(QStringLiteral("af"), rx1.afGain).toInt();
+    rx1.muteRadioSpeaker = s.value(QStringLiteral("muteRadioSpk"), rx1.muteRadioSpeaker).toBool();
     tx.drive = s.value(QStringLiteral("drive"), tx.drive).toInt();
     tx.micGain = s.value(QStringLiteral("mic"), tx.micGain).toInt();
+    tx.micBoost = s.value(QStringLiteral("micBoost"), tx.micBoost).toBool();
+    tx.micBias = s.value(QStringLiteral("micBias"), tx.micBias).toBool();
+    tx.lineIn = s.value(QStringLiteral("lineIn"), tx.lineIn).toBool();
     vac.vac1 = s.value(QStringLiteral("vac1"), vac.vac1).toBool();
     vac.vac1In = s.value(QStringLiteral("vac1In"), vac.vac1In).toString();
     vac.vac1Out = s.value(QStringLiteral("vac1Out"), vac.vac1Out).toString();
@@ -227,8 +231,12 @@ void RadioModel::saveSettings() const
     s.setValue(QStringLiteral("sampleRate"), sampleRate);
     s.setValue(QStringLiteral("tuneStep"), tuneStepHz);
     s.setValue(QStringLiteral("af"), rx1.afGain);
+    s.setValue(QStringLiteral("muteRadioSpk"), rx1.muteRadioSpeaker);
     s.setValue(QStringLiteral("drive"), tx.drive);
     s.setValue(QStringLiteral("mic"), tx.micGain);
+    s.setValue(QStringLiteral("micBoost"), tx.micBoost);
+    s.setValue(QStringLiteral("micBias"), tx.micBias);
+    s.setValue(QStringLiteral("lineIn"), tx.lineIn);
     s.setValue(QStringLiteral("vac1"), vac.vac1);
     s.setValue(QStringLiteral("vac1In"), vac.vac1In);
     s.setValue(QStringLiteral("vac1Out"), vac.vac1Out);

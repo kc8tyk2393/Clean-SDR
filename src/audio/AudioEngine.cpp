@@ -2,6 +2,7 @@
 
 #include "core/RadioModel.h"
 
+#include <QAudio>
 #include <QAudioDevice>
 #include <QAudioFormat>
 #include <QMediaDevices>
@@ -117,7 +118,7 @@ void AudioEngine::setup()
     }
 
     const QAudioDevice microphone = QMediaDevices::defaultAudioInput();
-    if (!microphone.isNull()) {
+    if (!m_model->vac.vac1 && !microphone.isNull()) {
         m_source = new QAudioSource(microphone, mic, this);
         m_source->setBufferSize(buf);
         m_in = m_source->start();
@@ -149,9 +150,32 @@ void AudioEngine::setup()
     }
 }
 
+void AudioEngine::recoverOutput()
+{
+    if (!m_sink)
+        return;
+    switch (m_sink->state()) {
+    case QAudio::SuspendedState:
+        m_sink->resume();
+        break;
+    case QAudio::IdleState:
+        m_sink->resume();
+        if (m_sink->state() == QAudio::StoppedState)
+            m_out = m_sink->start();
+        break;
+    case QAudio::StoppedState:
+        m_play.clear();
+        m_out = m_sink->start();
+        break;
+    default:
+        break;
+    }
+}
+
 void AudioEngine::pushSpeaker(const QVector<qint16>& interleavedStereo)
 {
     std::lock_guard lock(m_mutex);
+    recoverOutput();
     const QByteArray raw(reinterpret_cast<const char*>(interleavedStereo.constData()),
                          interleavedStereo.size() * int(sizeof(qint16)));
     writeQueue(m_out, m_play, raw);
@@ -184,7 +208,7 @@ QVector<float> AudioEngine::pullMic(int count)
 {
     QIODevice* src = (m_model->vac.vac1 && m_vacIn) ? m_vacIn : m_in;
     QVector<float> out;
-    if (!src)
+    if (!src || src->bytesAvailable() < 4)
         return out;
     const int ch = std::max(1, m_inChannels);
     const QByteArray raw = src->read(count * ch * 2);

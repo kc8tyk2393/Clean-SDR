@@ -24,6 +24,7 @@ public:
 
 private:
     void setup();
+    void recoverOutput();
     void closePair(QAudioSink*& sink, QIODevice*& io);
     void closePair(QAudioSource*& source, QIODevice*& io);
 

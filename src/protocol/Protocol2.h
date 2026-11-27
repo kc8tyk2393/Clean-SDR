@@ -33,6 +33,7 @@ public:
 
     void sendAudio(qint16 left, qint16 right);
     void sendTxIq(float i, float q);
+    void flushPendingTx();
 
 signals:
     void radiosChanged(const QVector<RadioInfo>& radios);
@@ -83,6 +84,7 @@ private:
     QString m_lastNote;
     int m_probes = 0;
     bool m_wasTx = false;
+    quint16 m_localPort = 0;
 };
 
 } // namespace brick2

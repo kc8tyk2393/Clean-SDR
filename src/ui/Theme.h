@@ -178,6 +178,23 @@ QTabBar::tab {
   border-bottom: none;
 }
 QTabBar::tab:selected { background: #1a2230; color: #e8eef5; }
+QCheckBox {
+  color: #9aa3ad;
+  spacing: 6px;
+  font-size: 10px;
+}
+QCheckBox::indicator {
+  width: 14px;
+  height: 14px;
+  border: 1px solid #323b48;
+  border-radius: 3px;
+  background: #0b0d10;
+}
+QCheckBox::indicator:checked {
+  background: #1f5a4a;
+  border-color: #3dd68c;
+}
+
 QGroupBox {
   border: 1px solid #242c36;
   margin-top: 14px;

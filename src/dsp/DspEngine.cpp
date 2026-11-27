@@ -3,6 +3,7 @@
 #include "core/RadioModel.h"
 
 #include <QDir>
+#include <QFile>
 #include <QStandardPaths>
 
 #include <algorithm>
@@ -18,7 +19,6 @@ namespace brick2 {
 namespace {
 
 constexpr int kRxSAv = 1;
-constexpr int kTxMicPk = 0;
 constexpr int kTxAlcPk = 13;
 constexpr int kTxAlcGain = 15;
 
@@ -74,6 +74,12 @@ DspEngine::DspEngine(RadioModel* model, QObject* parent)
 
     const QString data = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(data);
+    const QString wisdom = QDir(data).filePath(QStringLiteral("wdspWisdom01"));
+    if (!QFile::exists(wisdom)) {
+        const QString seed = QStringLiteral("C:/Users/timda/AppData/Local/Zeus/wdspWisdom01");
+        if (QFile::exists(seed))
+            QFile::copy(seed, wisdom);
+    }
     const QByteArray path = QDir::toNativeSeparators(data + QLatin1Char('/')).toLocal8Bit();
     WDSPwisdom(const_cast<char*>(path.constData()));
 
@@ -112,11 +118,12 @@ void DspEngine::ensureChannels()
     destroyChannels();
 
     OpenChannel(kRxCh, kBlock, kBlock, rate, kAudioRate, kAudioRate, 0, 1, 0.010, 0.025, 0.000, 0.010, 1);
-    OpenChannel(kTxCh, kBlock, kBlock, kAudioRate, kAudioRate, rate, 1, 0, 0.010, 0.025, 0.000, 0.010, 1);
+    OpenChannel(kTxCh, kBlock, kBlock, kAudioRate, kAudioRate, kTxRate, 1, 0, 0.010, 0.025, 0.000, 0.010, 1);
     SetChannelState(kRxCh, 1, 0);
+    SetChannelState(kTxCh, 1, 0);
 
-    create_anbEXT(0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 0.05);
-    create_nobEXT(0, 0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 0.05);
+    create_anbEXT(0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 30.0);
+    create_nobEXT(0, 0, 0, kBlock, double(rate), 0.0001, 0.0001, 0.0001, 0.0001, 30.0);
     m_anb = true;
     m_nob = true;
 
@@ -134,6 +141,13 @@ void DspEngine::ensureChannels()
 
     m_openRate = rate;
     m_open = true;
+    SetRXAANRPosition(kRxCh, 1);
+    SetRXAANFPosition(kRxCh, 1);
+    SetRXAEMNRPosition(kRxCh, 1);
+    SetRXAEMNRgainMethod(kRxCh, 2);
+    SetRXAEMNRnpeMethod(kRxCh, 0);
+    SetRXAEMNRaeRun(kRxCh, 1);
+    SetRXAPanelSelect(kRxCh, 3);
     applyRxControls();
     applyTxControls();
 }
@@ -154,6 +168,18 @@ void DspEngine::destroyChannels()
     m_anb = m_nob = m_open = false;
 }
 
+void DspEngine::applyRxLive()
+{
+    if (!m_open)
+        return;
+    const double af = m_model->rx1.mute ? 0.0 : std::max(0.05, m_model->rx1.afGain / 50.0);
+    SetRXAPanelGain1(kRxCh, af);
+    SetRXAAGCMode(kRxCh, int(m_model->rx1.agc));
+    SetRXAAGCTop(kRxCh, 60.0 + m_model->rx1.agcGain * 0.6);
+    SetRXAAMSQRun(kRxCh, m_model->rx1.squelch ? 1 : 0);
+    SetRXAAMSQThreshold(kRxCh, double(m_model->rx1.squelchThresh));
+}
+
 void DspEngine::applyRxControls()
 {
     if (!m_open)
@@ -161,22 +187,23 @@ void DspEngine::applyRxControls()
     const auto e = remapFilter(m_model->vfoA.edges, m_model->vfoA.mode);
     SetRXAMode(kRxCh, wdspMode(m_model->vfoA.mode));
     RXASetPassband(kRxCh, e.low, e.high);
-    SetRXAAGCMode(kRxCh, int(m_model->rx1.agc));
-    SetRXAAGCHang(kRxCh, m_model->rx1.agcHang);
-    SetRXAAGCTop(kRxCh, 60.0 + m_model->rx1.agcGain * 0.6);
     SetRXAANRRun(kRxCh, m_model->rx1.nr ? 1 : 0);
     SetRXAEMNRRun(kRxCh, m_model->rx1.nr2 ? 1 : 0);
     SetRXAANFRun(kRxCh, m_model->rx1.anf ? 1 : 0);
+    SetRXASNBAOutputBandwidth(kRxCh, e.low, e.high);
     SetRXASNBARun(kRxCh, m_model->rx1.snb ? 1 : 0);
     SetEXTANBRun(0, m_model->rx1.nb ? 1 : 0);
     SetEXTNOBRun(0, m_model->rx1.nb2 ? 1 : 0);
-    SetRXAPanelSelect(kRxCh, 2);
+    SetRXAPanelSelect(kRxCh, 3);
     SetRXAPanelBinaural(kRxCh, m_model->rx1.binaural ? 1 : 0);
-    SetRXAPanelCopy(kRxCh, m_model->rx1.binaural ? 0 : 1);
-    const double af = m_model->rx1.mute ? 0.0 : std::max(0.05, m_model->rx1.afGain / 50.0);
-    SetRXAPanelGain1(kRxCh, af);
-    SetRXAAMSQRun(kRxCh, m_model->rx1.squelch ? 1 : 0);
-    SetRXAAMSQThreshold(kRxCh, double(m_model->rx1.squelchThresh));
+    applyRxLive();
+}
+
+void DspEngine::applyRxSettings()
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    ensureChannels();
+    applyRxControls();
 }
 
 void DspEngine::applyTxControls()
@@ -197,7 +224,9 @@ void DspEngine::applyTxControls()
     SetTXACompressorRun(kTxCh, m_model->tx.comp ? 1 : 0);
     SetTXALevelerSt(kTxCh, m_model->tx.lev ? 1 : 0);
     SetTXACFCOMPRun(kTxCh, m_model->tx.cfc ? 1 : 0);
-    SetTXAPanelGain1(kTxCh, m_model->tx.micGain / 70.0);
+    SetTXAPanelRun(kTxCh, 1);
+    SetTXAPanelSelect(kTxCh, 2);
+    SetTXAPanelGain1(kTxCh, std::max(0.2, m_model->tx.micGain / 50.0));
 
     if (m_model->ps.twoTone) {
         SetTXAPreGenMode(kTxCh, 1);
@@ -205,18 +234,13 @@ void DspEngine::applyTxControls()
     } else if (m_model->tune) {
         SetTXAPreGenMode(kTxCh, 0);
         SetTXAPreGenToneFreq(kTxCh, 1000.0);
-        SetTXAPreGenToneMag(kTxCh, 0.5);
+        SetTXAPreGenToneMag(kTxCh, 0.9);
         SetTXAPreGenRun(kTxCh, 1);
     } else {
         SetTXAPreGenRun(kTxCh, 0);
     }
 
-    const int on = m_model->isTransmitting() ? 1 : 0;
-    SetChannelState(kTxCh, on, 0);
-    if (!m_model->dup)
-        SetChannelState(kRxCh, on ? 0 : 1, 0);
-    else
-        SetChannelState(kRxCh, 1, 0);
+    SetChannelState(kRxCh, 1, 0);
 }
 
 void DspEngine::processIq(int ddc, const QVector<float>& interleavedIq)
@@ -225,7 +249,7 @@ void DspEngine::processIq(int ddc, const QVector<float>& interleavedIq)
         return;
     std::lock_guard<std::mutex> lock(m_lock);
     ensureChannels();
-    applyRxControls();
+    applyRxLive();
 
     const float rf = std::pow(10.f, m_model->rx1.rfGain / 20.f);
     if (m_lastTuneHz != m_model->vfoA.frequency) {
@@ -307,6 +331,9 @@ void DspEngine::runSpectrum(float i, float q)
 
 void DspEngine::processMic(const QVector<float>& mic)
 {
+    if (mic.isEmpty())
+        return;
+    std::lock_guard<std::mutex> lock(m_lock);
     const bool wasOpen = m_model->voxOpen;
     float peak = 0;
     for (float x : mic) {
@@ -318,6 +345,7 @@ void DspEngine::processMic(const QVector<float>& mic)
             m_micFifo.pop_front();
     }
     m_frame.mic = peak > 1e-6f ? 20.f * std::log10(peak) : -40.f;
+    m_model->meters.mic = m_frame.mic;
 
     if (m_model->tx.vox) {
         if (m_voxEnv > m_model->tx.voxThresh / 200.f)
@@ -338,24 +366,45 @@ void DspEngine::processMic(const QVector<float>& mic)
 
 void DspEngine::pushTxBlock()
 {
-    for (int i = 0; i < kBlock; ++i) {
-        float a = 0.f;
-        if (!m_micFifo.empty() && !m_model->tune && !m_model->ps.twoTone) {
-            a = m_micFifo.front();
-            m_micFifo.pop_front();
+    const int outN = kBlock * kTxRate / kAudioRate;
+    if (m_model->tune || m_model->ps.twoTone) {
+        const double f1 = m_model->ps.twoTone ? 700.0 : 1000.0;
+        const double f2 = m_model->ps.twoTone ? 1900.0 : 0.0;
+        const float mag = m_model->ps.twoTone ? 0.28f : 0.35f;
+        constexpr float kTarget = 0.32f;
+        for (int i = 0; i < outN; ++i) {
+            const float i0 = mag * float(std::cos(m_txPhase) + (f2 > 0 ? std::cos(m_txPhase * (f2 / f1)) : 0.0));
+            const float q0 = mag * float(std::sin(m_txPhase) + (f2 > 0 ? std::sin(m_txPhase * (f2 / f1)) : 0.0));
+            const float peak = std::hypot(i0, q0);
+            m_alcEnv = std::max(peak, m_alcEnv * 0.992f);
+            const float g = (m_alcEnv > kTarget) ? (kTarget / m_alcEnv) : 1.f;
+            m_txQueue.push_back({i0 * g, q0 * g});
+            m_txPhase += kTwoPi * f1 / double(kTxRate);
+            if (m_txPhase > kTwoPi)
+                m_txPhase -= kTwoPi;
         }
-        m_txIn[size_t(i) * 2] = double(a);
-        m_txIn[size_t(i) * 2 + 1] = 0.0;
+        m_model->meters.alc = (m_alcEnv > kTarget) ? (20.f * std::log10(m_alcEnv / kTarget)) : 0.f;
+        m_frame.alc = m_model->meters.alc;
+        return;
     }
-    int err = 0;
-    fexchange0(kTxCh, m_txIn.data(), m_txOut.data(), &err);
-    const int outN = kBlock * std::max(1, m_openRate) / kAudioRate;
+
+    constexpr float kTarget = 0.32f;
     for (int i = 0; i < outN; ++i) {
-        m_txQueue.push_back({float(m_txOut[size_t(i) * 2]), float(m_txOut[size_t(i) * 2 + 1])});
+        if (i % (kTxRate / kAudioRate) == 0) {
+            float a = 0.f;
+            if (!m_micFifo.empty()) {
+                a = m_micFifo.front();
+                m_micFifo.pop_front();
+            }
+            m_txIn[0] = double(a);
+        }
+        const float a = float(m_txIn[0]) * 0.55f;
+        m_alcEnv = std::max(std::abs(a), m_alcEnv * 0.992f);
+        const float g = (m_alcEnv > kTarget) ? (kTarget / m_alcEnv) : 1.f;
+        m_txQueue.push_back({a * g, 0.f});
     }
-    m_model->meters.alc = float(GetTXAMeter(kTxCh, kTxAlcGain));
-    m_frame.alc = float(GetTXAMeter(kTxCh, kTxAlcPk));
-    m_frame.mic = float(GetTXAMeter(kTxCh, kTxMicPk));
+    m_model->meters.alc = (m_alcEnv > kTarget) ? (20.f * std::log10(m_alcEnv / kTarget)) : 0.f;
+    m_frame.alc = m_model->meters.alc;
 }
 
 void DspEngine::generateTx(int samples192k)
@@ -365,13 +414,27 @@ void DspEngine::generateTx(int samples192k)
     std::lock_guard<std::mutex> lock(m_lock);
     ensureChannels();
     applyTxControls();
-    const int outN = kBlock * std::max(1, m_openRate) / kAudioRate;
+    const int outN = kBlock * kTxRate / kAudioRate;
     int produced = 0;
     while (produced < samples192k) {
         pushTxBlock();
         produced += outN;
     }
     emit txIqReady();
+}
+
+void DspEngine::syncTransmit()
+{
+    std::lock_guard<std::mutex> lock(m_lock);
+    ensureChannels();
+    applyTxControls();
+    if (m_model->isTransmitting())
+        m_txPhase = 0;
+    else {
+        m_txQueue.clear();
+        m_alcEnv = 0;
+        m_model->meters.alc = 0;
+    }
 }
 
 QVector<std::complex<float>> DspEngine::takeTxIq()

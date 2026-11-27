@@ -397,6 +397,18 @@ SetupDialog::SetupDialog(RadioModel* model, AudioEngine* audio, QWidget* parent)
         f->addRow(lev);
         f->addRow(cfc);
         f->addRow(QStringLiteral("Tune power %"), tune);
+        auto* boost = new QCheckBox(QStringLiteral("Mic +20 dB boost"));
+        boost->setChecked(model->tx.micBoost);
+        connect(boost, &QCheckBox::toggled, this, [=](bool v) { model->tx.micBoost = v; });
+        auto* bias = new QCheckBox(QStringLiteral("Mic bias (front-panel electret)"));
+        bias->setChecked(model->tx.micBias);
+        connect(bias, &QCheckBox::toggled, this, [=](bool v) { model->tx.micBias = v; });
+        auto* line = new QCheckBox(QStringLiteral("Line in (not front-panel mic)"));
+        line->setChecked(model->tx.lineIn);
+        connect(line, &QCheckBox::toggled, this, [=](bool v) { model->tx.lineIn = v; });
+        f->addRow(boost);
+        f->addRow(bias);
+        f->addRow(line);
     }
 
     {

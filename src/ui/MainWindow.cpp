@@ -14,6 +14,7 @@
 #include <QAbstractSpinBox>
 #include <QApplication>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QFrame>
 #include <QHBoxLayout>
@@ -48,7 +49,11 @@ MainWindow::MainWindow()
     buildUi();
 
     connect(m_proto, &Protocol2Engine::iqReceived, m_dsp, &DspEngine::processIq);
-    connect(m_proto, &Protocol2Engine::micReceived, m_dsp, &DspEngine::processMic);
+    connect(m_model, &RadioModel::dspChanged, m_dsp, &DspEngine::applyRxSettings);
+    connect(m_proto, &Protocol2Engine::micReceived, this, [this](const QVector<float>& mic) {
+        if (!m_model->vac.vac1)
+            m_dsp->processMic(mic);
+    });
     connect(m_dsp, &DspEngine::frameReady, this, [this](const SpectrumFrame& f) {
         m_display->setFrame(f);
         m_model->meters.sMeter = f.sMeter;
@@ -56,10 +61,13 @@ MainWindow::MainWindow()
         refreshMeters();
     });
     connect(m_dsp, &DspEngine::audioReady, this, [this] {
-        m_audio->pushSpeaker(m_dsp->takeSpeaker());
-        const auto tx = m_dsp->takeTxIq();
-        for (const auto& s : tx)
-            m_proto->sendTxIq(s.real(), s.imag());
+        const auto spk = m_dsp->takeSpeaker();
+        m_audio->pushSpeaker(spk);
+        if (!spk.isEmpty() && (!m_model->isTransmitting() || m_model->dup)) {
+            const bool radioSpkOff = m_model->rx1.muteRadioSpeaker;
+            for (int i = 0; i + 1 < spk.size(); i += 2)
+                m_proto->sendAudio(radioSpkOff ? 0 : spk[i], radioSpkOff ? 0 : spk[i + 1]);
+        }
     });
     connect(m_display, &PanafallWidget::clickTune, this, [this](qint64 hz) {
         m_model->setFrequency(hz, false, true);
@@ -75,7 +83,10 @@ MainWindow::MainWindow()
         if (m_lcdB)
             m_lcdB->setStepHz(m_model->tuneStepHz);
     });
-    connect(m_model, &RadioModel::modeChanged, this, [this] { refreshVfo(); });
+    connect(m_model, &RadioModel::modeChanged, this, [this] {
+        refreshVfo();
+        m_dsp->applyRxSettings();
+    });
     connect(m_proto, &Protocol2Engine::connected, this, [this](const RadioInfo& info) {
         m_link->setText(info.simulator ? QStringLiteral("SIMULATOR")
                                        : QStringLiteral("ONLINE  ·  %1").arg(info.ip));
@@ -110,19 +121,17 @@ MainWindow::MainWindow()
     auto* micTimer = new QTimer(this);
     micTimer->setInterval(20);
     connect(micTimer, &QTimer::timeout, this, [this] {
-        m_dsp->processMic(m_audio->pullMic(960));
+        const auto pcMic = m_audio->pullMic(960);
+        if (!pcMic.isEmpty())
+            m_dsp->processMic(pcMic);
         if (m_model->isTransmitting()) {
             m_dsp->generateTx(3840);
             const auto tx = m_dsp->takeTxIq();
             for (const auto& s : tx)
                 m_proto->sendTxIq(s.real(), s.imag());
+            m_proto->flushPendingTx();
         } else {
             m_model->meters.alc = 0.f;
-        }
-        const auto spk = m_dsp->takeSpeaker();
-        if (!spk.isEmpty() && (!m_model->isTransmitting() || m_model->dup)) {
-            for (int i = 0; i + 1 < spk.size(); i += 2)
-                m_proto->sendAudio(spk[i], spk[i + 1]);
         }
         if (m_keyStatus)
             m_keyStatus->setText(m_model->transmitLabel());
@@ -242,6 +251,13 @@ QWidget* MainWindow::sliderColumn(const QString& name, int minv, int maxv, int* 
     box->addWidget(lab);
     box->addWidget(s, 1, Qt::AlignHCenter);
     box->addWidget(val);
+    if (name == QLatin1String("AF")) {
+        auto* spk = new QCheckBox(QStringLiteral("Radio spk off"));
+        spk->setChecked(m_model->rx1.muteRadioSpeaker);
+        spk->setFocusPolicy(Qt::NoFocus);
+        connect(spk, &QCheckBox::toggled, this, [this](bool on) { m_model->rx1.muteRadioSpeaker = on; });
+        box->addWidget(spk, 0, Qt::AlignHCenter);
+    }
     return w;
 }
 
@@ -630,6 +646,7 @@ void MainWindow::buildUi()
 
 void MainWindow::applyTransmit()
 {
+    m_dsp->syncTransmit();
     m_proto->pushControl();
     refreshVfo();
     refreshMeters();

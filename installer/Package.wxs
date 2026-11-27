@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="Brick2SDR"
+           Manufacturer="KC8TYK"
+           Version="1.0.0"
+           UpgradeCode="a7c4e91b-2d6f-4b18-9e3a-8c1f0b2d3e4f"
+           Language="1033"
+           Scope="perMachine">
+    <SummaryInformation Description="Brick2SDR console for Brick2 / ANAN-10E on OpenHPSDR Protocol 2" />
+    <MajorUpgrade DowngradeErrorMessage="A newer version of Brick2SDR is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <ui:WixUI Id="WixUI_InstallDir" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Brick2SDR">
+        <Files Include="!(bindpath.Payload)\**" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="b8d5f02c-3e7a-4c29-af4b-9d2e1c3f4a50">
+        <Shortcut Id="StartMenuBrick2SDR"
+                  Name="Brick2SDR"
+                  Description="Brick2SDR radio console"
+                  Target="[INSTALLFOLDER]Brick2SDR.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKMU"
+                       Key="Software\KC8TYK\Brick2SDR"
+                       Name="StartMenu"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder">
+      <Component Id="DesktopShortcut" Guid="c9e6013d-4f8b-5d3a-b05c-0e3f2d4a5b61">
+        <Shortcut Id="DesktopBrick2SDR"
+                  Name="Brick2SDR"
+                  Target="[INSTALLFOLDER]Brick2SDR.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKMU"
+                       Key="Software\KC8TYK\Brick2SDR"
+                       Name="Desktop"
+                       Type="integer"
+                       Value="1"
+                       KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Brick2SDR" Description="Brick2SDR application" Level="1">
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+  </Package>
+</Wix>

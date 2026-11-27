@@ -12,6 +12,12 @@
 namespace brick2 {
 namespace {
 
+void putU16(QByteArray& b, int off, quint16 v)
+{
+    b[off] = char((v >> 8) & 0xFF);
+    b[off + 1] = char(v & 0xFF);
+}
+
 void putU32(QByteArray& b, int off, quint32 v)
 {
     b[off] = char((v >> 24) & 0xFF);
@@ -72,8 +78,11 @@ Protocol2Engine::Protocol2Engine(RadioModel* model, QObject* parent)
 bool Protocol2Engine::bindSocket()
 {
     m_socket.close();
-    const bool ok = m_socket.bind(QHostAddress::AnyIPv4, 0,
-                                  QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint);
+    const auto flags = QUdpSocket::ShareAddress | QUdpSocket::ReuseAddressHint;
+    bool ok = m_socket.bind(QHostAddress::AnyIPv4, 1025, flags);
+    if (!ok)
+        ok = m_socket.bind(QHostAddress::AnyIPv4, 0, flags);
+    m_localPort = m_socket.localPort();
     if (!ok) {
         m_lastNote = QStringLiteral("UDP bind failed: %1").arg(m_socket.errorString());
         emit discoveryStatus(m_lastNote);
@@ -186,7 +195,10 @@ void Protocol2Engine::pushControl()
     if (tx && !m_wasTx) {
         m_txIqBuf.fill(0, 1444);
         m_txIqIndex = 4;
+        m_seqTxIq = 0;
     }
+    if (!tx && m_wasTx && m_txIqIndex > 4)
+        flushTxIq();
     m_wasTx = tx;
     sendHighPriority();
     sendTxSpecific();
@@ -244,6 +256,12 @@ void Protocol2Engine::flushTxIq()
     m_socket.writeDatagram(m_txIqBuf, addr, 1029);
     m_txIqBuf.fill(0, 1444);
     m_txIqIndex = 4;
+}
+
+void Protocol2Engine::flushPendingTx()
+{
+    if (m_txIqIndex > 4)
+        flushTxIq();
 }
 
 void Protocol2Engine::probeAddress(const QHostAddress& dest)
@@ -316,11 +334,26 @@ void Protocol2Engine::sendGeneral()
 {
     QByteArray b(60, 0);
     putU32(b, 0, m_seqGeneral++);
+    b[4] = 0;
+    const quint16 pc = m_localPort ? m_localPort : quint16(m_socket.localPort());
+    putU16(b, 5, pc);    // HP status → this socket
+    putU16(b, 7, pc);    // mic → this socket
+    putU16(b, 9, pc);    // wideband → this socket
+    putU16(b, 11, 1025); // DDC command to radio
+    putU16(b, 13, 1028); // RX audio to radio
+    putU16(b, 15, 1029); // TX IQ to radio
+    putU16(b, 17, pc);   // DDC0 IQ → this socket
+    putU16(b, 19, 1026); // DUC command to radio
+    putU16(b, 21, 1027); // HP command to radio
     b[23] = 0;
+    putU16(b, 24, 512);
+    b[26] = 16;
+    b[27] = 0;
+    b[28] = 32;
     b[37] = 0x08; // phase word, not Hz
     b[38] = 0x01; // hardware watchdog
     b[58] = char((m_model->paEnable ? 0x01 : 0) | (m_model->apollo ? 0x02 : 0));
-    b[59] = 0x01; // Alex 0
+    b[59] = 0x03; // Alex 0 + Alex 1
     m_socket.writeDatagram(b, QHostAddress(m_info.ip), 1024);
 }
 
@@ -328,29 +361,36 @@ void Protocol2Engine::sendRxSpecific()
 {
     QByteArray b(1444, 0);
     putU32(b, 0, m_seqRx++);
-    b[4] = 2;
-    const int n = m_model->rx2Enabled ? 2 : 1;
-    for (int i = 0; i < n; ++i) {
-        const auto& rx = (i == 0) ? m_model->rx1 : m_model->rx2;
-        if (rx.dither)
-            b[5] = char(b[5] | (1 << i));
-        if (rx.randomizer)
-            b[6] = char(b[6] | (1 << i));
-        b[7] = char(b[7] | (1 << i));
-        b[17 + i * 6] = 0;
-        const int khz = m_model->sampleRate / 1000;
-        b[18 + i * 6] = char((khz >> 8) & 0xFF);
-        b[19 + i * 6] = char(khz & 0xFF);
-        b[22 + i * 6] = 24;
+    const quint8 adcs = (m_info.boardType <= 2) ? 1 : 2;
+    b[4] = char(adcs);
+    const quint8 adcMask = adcs == 1 ? 0x01 : 0x07;
+    if (m_model->rx1.dither)
+        b[5] = char(adcMask);
+    if (m_model->rx1.randomizer)
+        b[6] = char(adcMask);
+    quint8 ddc = 0x01;
+    const int khz = m_model->sampleRate / 1000;
+    b[17] = 0;
+    putU16(b, 18, quint16(khz));
+    b[22] = 24;
+    if (m_model->rx2Enabled) {
+        ddc = quint8(ddc | 0x02);
+        b[23] = 0;
+        putU16(b, 24, quint16(khz));
+        b[28] = 24;
+        if (m_model->rx2.dither)
+            b[5] = char(b[5] | 0x02);
+        if (m_model->rx2.randomizer)
+            b[6] = char(b[6] | 0x02);
     }
     if (m_model->ps.enabled && m_model->isTransmitting()) {
-        b[7] = char(b[7] | 0x03);
+        ddc = quint8(ddc | 0x03);
         b[1363] = 0x02;
         b[17 + 6] = 1;
-        b[18 + 6] = 0;
-        b[19 + 6] = 192;
+        putU16(b, 18 + 6, 192);
         b[22 + 6] = 24;
     }
+    b[7] = char(ddc);
     m_socket.writeDatagram(b, QHostAddress(m_info.ip), 1025);
 }
 
@@ -359,25 +399,35 @@ void Protocol2Engine::sendTxSpecific()
     QByteArray b(60, 0);
     putU32(b, 0, m_seqTx++);
     b[4] = 1; // 1 DAC
-    b[5] = 0; // CW mode flags
-    if (m_model->cw.iambic)
-        b[5] = char(b[5] | 0x01);
-    if (m_model->cw.modeB)
-        b[5] = char(b[5] | 0x02);
-    if (m_model->cw.reversePaddles)
-        b[5] = char(b[5] | 0x08);
-    if (m_model->cw.breakIn)
-        b[5] = char(b[5] | 0x10);
-    b[9] = char(m_model->cw.sidetone >> 8);
-    b[10] = char(m_model->cw.sidetone & 0xFF);
-    const int hang = int(1200.0 / std::max(1, m_model->cw.wpm) * (m_model->cw.breakInDelay / 300.0) * 8);
-    b[13] = char((hang >> 8) & 0xFF);
-    b[14] = char(hang & 0xFF);
-    b[17] = char(m_model->cw.wpm);
-    if (m_model->tx.micBoost)
-        b[50] = char(b[50] | 0x01);
+    putU16(b, 14, quint16(std::max(1, m_model->sampleRate / 1000)));
+    if (isCw(m_model->vfoA.mode)) {
+        quint8 cw = 0x02;
+        if (m_model->cw.iambic)
+            cw = quint8(cw | (m_model->cw.modeB ? 0x28 : 0x08));
+        if (m_model->cw.sidetoneGain != 0)
+            cw = quint8(cw | 0x10);
+        if (m_model->cw.breakIn)
+            cw = quint8(cw | 0x80);
+        b[5] = char(cw);
+        b[6] = char(std::clamp(m_model->cw.sidetoneGain, 0, 127));
+        putU16(b, 7, quint16(m_model->cw.sidetone));
+        b[9] = char(std::clamp(m_model->cw.wpm, 1, 60));
+        b[10] = 50;
+        putU16(b, 11, 300);
+        b[13] = char(std::clamp(std::min(8, 900 / std::max(1, m_model->cw.wpm)), 0, 255));
+        b[17] = 9;
+    }
+    quint8 mic = 0;
     if (m_model->tx.lineIn)
-        b[50] = char(b[50] | 0x02);
+        mic |= 0x01;
+    if (m_model->tx.micBoost)
+        mic |= 0x02;
+    if (m_model->tx.micBias)
+        mic |= 0x10;
+    b[50] = char(mic);
+    b[57] = 0;
+    b[58] = 0;
+    b[59] = 0;
     m_socket.writeDatagram(b, QHostAddress(m_info.ip), 1026);
 }
 
@@ -399,19 +449,17 @@ void Protocol2Engine::sendHighPriority()
     const qint64 tx = m_model->txFrequency();
     putU32(b, 329, frequencyToPhaseWord(double(tx)));
 
-    int power = 0;
-    if (m_model->isTransmitting()) {
-        power = m_model->tune && !m_model->tx.useDriveForTune
-                    ? int(m_model->tx.drive / 100.0 * m_model->tx.tunePercent)
-                    : m_model->tx.drive;
-    }
-    b[345] = char(std::clamp(int(power * 2.55), 0, 255));
-    b[1431] = char(std::clamp(m_model->rx1.stepAtt, 0, 31));
-    if (m_model->rx1.lna)
-        b[1431] = char(b[1431] | 0x20);
+    int power = m_model->tx.drive;
+    if (m_model->isTransmitting() && m_model->tune && !m_model->tx.useDriveForTune)
+        power = int(m_model->tx.drive / 100.0 * m_model->tx.tunePercent);
+    b[345] = char(std::clamp(int(std::lround(power * 2.55)), 0, 255));
+    b[1403] = m_model->rx1.lna ? 1 : 0;
+    const quint8 att = quint8(std::clamp(m_model->rx1.stepAtt, 0, 31));
+    b[1442] = char(att);
+    b[1443] = char(att);
     const quint32 filters = alexFilterWord(rxA, tx, m_model->isTransmitting(), m_model->ps.enabled);
+    putU32(b, 1428, filters);
     putU32(b, 1432, filters);
-    b[1443] = char(std::clamp(m_model->rx1.stepAtt, 0, 31));
     m_socket.writeDatagram(b, QHostAddress(m_info.ip), 1027);
 }
 
@@ -511,16 +559,17 @@ void Protocol2Engine::parseDiscovery(const QByteArray& data, const QHostAddress&
 
 void Protocol2Engine::parseIq(int ddc, const QByteArray& data)
 {
-    if (data.size() < 22)
+    if (data.size() < 16 + 6)
         return;
     const auto* p = reinterpret_cast<const quint8*>(data.constData());
-    const int n = (p[14] << 8) | p[15];
+    const int n = std::min(238, int((data.size() - 16) / 6));
     QVector<float> samples;
     samples.reserve(n * 2);
+    constexpr float kScale = 1.f / 8388608.f;
     int b = 16;
-    for (int i = 0; i < n && b + 6 <= data.size(); ++i) {
-        samples.push_back(float(be24(p + b)) / 8388607.f);
-        samples.push_back(float(be24(p + b + 3)) / 8388607.f);
+    for (int i = 0; i < n; ++i) {
+        samples.push_back(float(be24(p + b)) * kScale);
+        samples.push_back(float(be24(p + b + 3)) * kScale);
         b += 6;
     }
     emit iqReceived(ddc, samples);
@@ -553,7 +602,7 @@ void Protocol2Engine::parseHighPriority(const QByteArray& data)
 
 void Protocol2Engine::parseMic(const QByteArray& data)
 {
-    if (data.size() < 8)
+    if (data.size() < 8 || data.size() == 60)
         return;
     QVector<float> mic;
     const auto* p = reinterpret_cast<const quint8*>(data.constData());
@@ -592,7 +641,7 @@ void Protocol2Engine::simulatorTick()
     if (m_model->isTransmitting()) {
         m_model->meters.fwdWatts = float(m_model->tx.drive) * 0.15f;
         m_model->meters.swr = 1.2f;
-        m_model->meters.alc = -3.f;
+        m_model->meters.alc = 3.f;
     } else {
         m_model->meters.fwdWatts = 0;
         m_model->meters.alc = 0.f;

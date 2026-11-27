@@ -19,7 +19,7 @@ struct SpectrumFrame {
     QVector<float> audio;
     QVector<float> scope;
     float sMeter = -130;
-    float alc = -20;
+    float alc = 0;
     float mic = -20;
 };
 
@@ -32,6 +32,8 @@ public:
     void processIq(int ddc, const QVector<float>& interleavedIq);
     void generateTx(int samples192k);
     void processMic(const QVector<float>& mic);
+    void syncTransmit();
+    void applyRxSettings();
     QVector<std::complex<float>> takeTxIq();
     QVector<qint16> takeSpeaker();
     SpectrumFrame lastFrame() const { return m_frame; }
@@ -48,10 +50,12 @@ private:
     static constexpr int kBlock = 256;
     static constexpr int kFft = 4096;
     static constexpr int kPixels = 2048;
+    static constexpr int kTxRate = 192000;
 
     void ensureChannels();
     void destroyChannels();
     void applyRxControls();
+    void applyRxLive();
     void applyTxControls();
     void pushRxBlock();
     void pushTxBlock();
@@ -80,6 +84,8 @@ private:
     int m_rxFill = 0;
     int m_fftFill = 0;
     qint64 m_lastTuneHz = -1;
+    double m_txPhase = 0;
+    float m_alcEnv = 0;
     bool m_open = false;
     bool m_anb = false;
     bool m_nob = false;
