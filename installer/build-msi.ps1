@@ -83,6 +83,7 @@ $wixArgs = @(
     "build", $pkg,
     "-arch", "x64",
     "-ext", "WixToolset.UI.wixext",
+    "-bindpath", $PSScriptRoot,
     "-bindpath", "Payload=$Payload",
     "-out", $Msi,
     "-pdbtype", "none"

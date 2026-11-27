@@ -16,9 +16,7 @@
     <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
 
     <StandardDirectory Id="ProgramFiles64Folder">
-      <Directory Id="INSTALLFOLDER" Name="Brick2SDR">
-        <Files Include="!(bindpath.Payload)\**" />
-      </Directory>
+      <Directory Id="INSTALLFOLDER" Name="Brick2SDR" />
     </StandardDirectory>
 
     <StandardDirectory Id="ProgramMenuFolder">
@@ -53,6 +51,7 @@
     </StandardDirectory>
 
     <Feature Id="Main" Title="Brick2SDR" Description="Brick2SDR application" Level="1">
+      <Files Include="!(bindpath.Payload)\**" Directory="INSTALLFOLDER" />
       <ComponentRef Id="StartMenuShortcut" />
       <ComponentRef Id="DesktopShortcut" />
     </Feature>
